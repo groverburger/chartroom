@@ -85,6 +85,8 @@ struct Quote {
     double price{}, change{};
     Time asof{}, fetched{};
     bool snapshot = false;
+    std::string source = "Yahoo";
+    bool rolling = false;
 };
 struct Grid {
     double step{}, major{};

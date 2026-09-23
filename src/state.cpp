@@ -103,7 +103,8 @@ State::State(fs::path dir, bool offline_, fs::path import) : directory(std::move
                 continue;
             accept_quote(s,
                          {j.at("price"), j.at("change"), parse_time(j.at("asof")),
-                          parse_time(j.at("fetched_at")), j.value("snapshot", false)},
+                          parse_time(j.at("fetched_at")), j.value("snapshot", false),
+                          j.value("source", std::string("Yahoo")), j.value("rolling", false)},
                          false);
         } catch (...) {
         }
@@ -187,7 +188,7 @@ Series &State::ensure(const std::string &s, int tf) {
     return entry;
 }
 void State::repair(History h, std::function<void(History)> callback) {
-    auto targets = recovery_targets(h, now());
+    auto targets = data_source(h) == "Yahoo" ? recovery_targets(h, now()) : std::set<Time>{};
     if (targets.empty()) {
         callback(std::move(h));
         return;
@@ -213,7 +214,12 @@ void State::repair(History h, std::function<void(History)> callback) {
 void State::accept(const std::string &k, History h) {
     ++visual_revision;
     auto &entry = series.at(k);
-    entry.history = entry.loaded ? merge_history(entry.history, h) : std::move(h);
+    auto family = [](const History &history) {
+        auto source = data_source(history);
+        return source.starts_with("Nasdaq") ? std::string("Nasdaq") : source;
+    };
+    entry.history =
+        entry.loaded && family(entry.history) == family(h) ? merge_history(entry.history, h) : std::move(h);
     entry.loaded = !entry.history.bars.empty();
     entry.loading = false;
     entry.next = now() + 60;
@@ -245,21 +251,19 @@ void State::fetch(const std::string &symbol, int tf, bool full) {
     if (interval == "1h")
         start = std::max(start, clock - 729 * 86400);
     fetch_quote(symbol);
-    network.get(history_url(symbol, interval, start, clock),
-                [this, k, symbol, interval](std::string body, std::string error) {
-                    try {
-                        if (!error.empty())
-                            throw std::runtime_error(error);
-                        auto h = parse_history(body, symbol, interval, series.at(k).loaded);
-                        repair(std::move(h), [this, k](History repaired) { accept(k, std::move(repaired)); });
-                    } catch (const std::exception &e) {
-                        ++visual_revision;
-                        auto &item = series.at(k);
-                        item.error = e.what();
-                        item.loading = false;
-                        item.next = now() + 120;
-                    }
-                });
+    providers.history(symbol, interval, start, entry.loaded ? data_source(entry.history) : "",
+                      [this, k](History h, std::string error) {
+                          if (error.empty()) {
+                              repair(std::move(h),
+                                     [this, k](History repaired) { accept(k, std::move(repaired)); });
+                          } else {
+                              ++visual_revision;
+                              auto &item = series.at(k);
+                              item.error = std::move(error);
+                              item.loading = false;
+                              item.next = now() + 120;
+                          }
+                      });
 }
 void State::accept_quote(const std::string &symbol, Quote q, bool persist) {
     if (!std::isfinite(q.price) || !std::isfinite(q.change) || q.asof <= 0 || q.fetched <= 0)
@@ -284,7 +288,9 @@ void State::accept_quote(const std::string &symbol, Quote q, bool persist) {
                          {"change", q.change},
                          {"asof", date(q.asof, "%Y-%m-%dT%H:%M:%S")},
                          {"fetched_at", date(q.fetched, "%Y-%m-%dT%H:%M:%S")},
-                         {"snapshot", q.snapshot}});
+                         {"snapshot", q.snapshot},
+                         {"source", q.source},
+                         {"rolling", q.rolling}});
         } catch (const std::exception &e) {
             notice = e.what();
         }
@@ -294,21 +300,193 @@ void State::fetch_quote(const std::string &symbol) {
     if (offline || quote_loading.count(symbol))
         return;
     quote_loading.insert(symbol);
-    // Intraday metadata includes previousClose even when no bars traded in this five-minute window.
-    // This avoids depending on complete daily OHLC rows (Yahoo sometimes omits yesterday's row).
-    network.get(history_url(symbol, "1m", now() - 300, now()),
-                [this, symbol](std::string body, std::string error) {
-                    quote_loading.erase(symbol);
-                    quote_next[symbol] = now() + 60;
-                    ++visual_revision;
-                    try {
-                        if (!error.empty())
-                            throw std::runtime_error(error);
-                        accept_quote(symbol, parse_quote(body, symbol));
-                    } catch (const std::exception &e) {
-                        quote_errors[symbol] = e.what();
-                    }
-                });
+    providers.quote(symbol, [this, symbol](Quote q, std::string error) {
+        quote_loading.erase(symbol);
+        quote_next[symbol] = now() + 60;
+        ++visual_revision;
+        if (error.empty())
+            accept_quote(symbol, std::move(q));
+        else
+            quote_errors[symbol] = std::move(error);
+    });
+}
+static Json options_cache(const OptionChain &chain) {
+    Json rows = Json::array();
+    for (auto &r : chain.rows) {
+        Json row = {{"expirygroup", date(parse_time(r.expiry + "T00:00:00"), "%B %d, %Y")},
+                    {"strike", r.strike},
+                    {"drillDownURL", ""}};
+        for (auto [prefix, side] : {std::pair{"c_", r.call}, {"p_", r.put}}) {
+            row[std::string(prefix) + "Last"] = side.last;
+            row[std::string(prefix) + "Bid"] = side.bid;
+            row[std::string(prefix) + "Ask"] = side.ask;
+            row[std::string(prefix) + "Volume"] = side.volume;
+            row[std::string(prefix) + "Openinterest"] = side.interest;
+            row[std::string(prefix) + "colour"] = side.itm;
+        }
+        rows.push_back(std::move(row));
+    }
+    return {{"data",
+             {{"totalRecord", chain.total}, {"lastTrade", chain.last_trade}, {"table", {{"rows", rows}}}}},
+            {"fetched", chain.fetched},
+            {"truncated", chain.truncated}};
+}
+void State::refresh_option_dates(bool full) {
+    auto symbol = options.symbol;
+    auto path = cache_path(directory, symbol, "option-dates");
+    if (options.dates_symbol != symbol) {
+        ++options.dates_generation;
+        options.dates_symbol = symbol;
+        options.dates = {};
+        options.dates_error.clear();
+        options.dates_loading = false;
+        options.dates_retry = 0;
+        try {
+            auto j = read_json(path);
+            for (auto &d : j.at("dates")) {
+                auto value = d.get<std::string>();
+                if (valid_expiry(value) && value >= date(now(), "%Y-%m-%d"))
+                    options.dates.dates.push_back(value);
+            }
+            options.dates.fetched = j.at("fetched");
+            options.dates.complete = j.value("complete", false);
+        } catch (...) {
+            options.dates = {};
+        }
+    }
+    if (offline || options.dates_loading || options.dates_retry > now())
+        return;
+    if (!options.dates.dates.empty() && options.dates.fetched + 86400 > now() &&
+        (!full || options.dates.complete))
+        return;
+    options.dates_loading = true;
+    auto generation = ++options.dates_generation;
+    providers.option_dates(symbol, full,
+                           [this, generation, symbol, path](OptionDates dates, std::string error) {
+                               if (options.dates_generation != generation || options.symbol != symbol)
+                                   return;
+                               options.dates_loading = false;
+                               options.dates_error = std::move(error);
+                               options.dates_retry = now() + (options.dates_error.empty() ? 0 : 120);
+                               ++visual_revision;
+                               if (!dates.dates.empty()) {
+                                   options.dates = std::move(dates);
+                                   try {
+                                       atomic_json(path, {{"dates", options.dates.dates},
+                                                          {"fetched", options.dates.fetched},
+                                                          {"complete", options.dates.complete}});
+                                   } catch (const std::exception &e) {
+                                       notice = e.what();
+                                   }
+                                   if (options.open)
+                                       refresh_options();
+                               }
+                           });
+}
+void State::refresh_options(bool force) {
+    refresh_option_dates();
+    if (!valid_expiry(options.expiry) || options.expiry < date(now(), "%Y-%m-%d")) {
+        options.expiry.clear();
+        if (!options.dates.dates.empty())
+            options.expiry = options.dates.dates.front();
+    }
+    auto key = options.symbol + "|" + options.expiry;
+    if (options.loading && options.key == key)
+        return;
+    auto path = cache_path(directory, options.symbol, "options-" + options.expiry);
+    if (options.key != key) {
+        ++options.generation;
+        options.data = {};
+        options.error.clear();
+        options.loading = false;
+        try {
+            auto j = read_json(path);
+            options.data = parse_options(j.dump());
+            options.data.fetched = j.at("fetched");
+            options.data.truncated = j.value("truncated", false);
+        } catch (...) {
+        }
+    }
+    options.key = key;
+    if (options.expiry.empty()) {
+        options.next = now() + 120;
+        return;
+    }
+    if (offline)
+        return;
+    if (!force && options.data.fetched > now() - 60) {
+        options.next = options.data.fetched + 60;
+        return;
+    }
+    auto generation = ++options.generation;
+    options.loading = true;
+    ++visual_revision;
+    auto symbol = options.symbol, expiry = options.expiry;
+    providers.options(
+        symbol, expiry, [this, generation, symbol, expiry, path](OptionChain data, std::string error) {
+            // A slower previous expiry/symbol must never overwrite the user's latest selection.
+            if (generation != options.generation || options.symbol != symbol || options.expiry != expiry)
+                return;
+            options.loading = false;
+            options.next = now() + (error.empty() ? 60 : 120);
+            options.error = std::move(error);
+            ++visual_revision;
+            if (!options.error.empty())
+                return;
+            options.data = std::move(data);
+            try {
+                atomic_json(path, options_cache(options.data));
+            } catch (const std::exception &e) {
+                notice = e.what();
+            }
+        });
+}
+void State::refresh_screener() {
+    auto key = scanner_request(screener.query).dump();
+    if (screener.loading && screener.key == key)
+        return;
+    auto path = directory / "cache" / "screener.json";
+    if (screener.key != key) {
+        screener.data = {};
+        screener.error.clear();
+        try {
+            auto j = read_json(path);
+            if (j.at("query") == key) {
+                screener.data = parse_screen(j.dump());
+                screener.data.fetched = j.at("fetched");
+            }
+        } catch (...) {
+        }
+    }
+    screener.key = key;
+    auto generation = ++screener.generation;
+    screener.loading = !offline;
+    if (offline)
+        return;
+    ++visual_revision;
+    providers.screen(screener.query, [this, generation, path, key](ScreenResult data, std::string error) {
+        if (generation != screener.generation)
+            return;
+        screener.loading = false;
+        screener.next = now() + (error.empty() ? 60 : 120);
+        screener.error = std::move(error);
+        ++visual_revision;
+        if (!screener.error.empty())
+            return;
+        screener.data = std::move(data);
+        Json rows = Json::array();
+        for (auto &r : screener.data.rows)
+            rows.push_back({{"s", r.exchange + ":" + r.symbol},
+                            {"d", {r.name, r.price, r.change, r.cap, r.sector, r.volume, r.exchange}}});
+        try {
+            atomic_json(path, {{"query", key},
+                               {"data", rows},
+                               {"totalCount", screener.data.total},
+                               {"fetched", screener.data.fetched}});
+        } catch (const std::exception &e) {
+            notice = e.what();
+        }
+    });
 }
 void State::refresh(Panel &p) {
     fetch(p.symbol, p.tf, true);
@@ -385,6 +563,12 @@ std::vector<std::string> State::visible_symbols() const {
 bool State::tick() {
     auto before = visual_revision;
     network.poll();
+    if (options.open && (options.key != options.symbol + "|" + options.expiry ||
+                         (!offline && !options.loading && options.next <= now())))
+        refresh_options();
+    if (screener.open && (screener.key != scanner_request(screener.query).dump() ||
+                          (!offline && !screener.loading && screener.next <= now())))
+        refresh_screener();
     for (auto [symbol, tf] : needed_series()) {
         auto &e = ensure(symbol, tf);
         if (e.next <= now())
@@ -417,6 +601,10 @@ Time State::next_deadline() const {
     if (save_pending && may_save)
         next = save_next;
     if (!offline) {
+        if (options.open && !options.loading && !options.dates_loading)
+            next = std::min(next, options.next);
+        if (screener.open && !screener.loading)
+            next = std::min(next, screener.next);
         for (auto &[symbol, tf] : needed_series()) {
             auto it = series.find(key(symbol, tf));
             if (it == series.end())
@@ -475,7 +663,21 @@ Json State::document() const {
             {"x", x},
             {"y", y},
             {"maximized", maximized},
-            {"drawing_tools_open", drawing_tools_open}};
+            {"drawing_tools_open", drawing_tools_open},
+            {"options",
+             {{"open", options.open},
+              {"symbol", options.symbol},
+              {"expiry", options.expiry},
+              {"puts", options.puts}}},
+            {"screener",
+             {{"open", screener.open},
+              {"sort", screener.query.sort},
+              {"offset", screener.query.offset},
+              {"min_price", screener.query.min_price},
+              {"min_cap", screener.query.min_cap},
+              {"min_volume", screener.query.min_volume},
+              {"sector", screener.query.sector},
+              {"search", screener.search}}}};
 }
 void State::restore(const Json &j, bool julia) {
     if (j.at("version") != 1)
@@ -543,6 +745,20 @@ void State::restore(const Json &j, bool julia) {
         y = j.value("y", -1);
         maximized = j.value("maximized", false);
         drawing_tools_open = j.value("drawing_tools_open", false);
+        auto o = j.value("options", Json::object());
+        options.open = o.value("open", false);
+        options.symbol = normalize_symbol(o.value("symbol", std::string("SPY")));
+        options.expiry = o.value("expiry", std::string{});
+        options.puts = o.value("puts", false);
+        auto sc = j.value("screener", Json::object());
+        screener.open = sc.value("open", false);
+        screener.query.sort = std::clamp(sc.value("sort", 0), 0, 3);
+        screener.query.offset = std::clamp(sc.value("offset", 0), 0, 100000);
+        screener.query.min_price = std::max(0., sc.value("min_price", 0.));
+        screener.query.min_cap = std::max(0., sc.value("min_cap", 0.));
+        screener.query.min_volume = std::max(0., sc.value("min_volume", 0.));
+        screener.query.sector = sc.value("sector", std::string{});
+        screener.search = sc.value("search", std::string{});
     }
     relayout = ini.empty();
 }

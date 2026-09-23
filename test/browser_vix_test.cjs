@@ -19,6 +19,7 @@ const hourly = JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/vix-zero
       if(offline) html=html.replace('var Module={','var Module={arguments:["--offline"],');
       await route.fulfill({response,body:html});
     });
+ await page.route('**/nasdaq/**', route=>route.fulfill({status:503,body:'Provider unavailable in Yahoo regression fixture'}));
     await page.route('**/yahoo/**',async route=>{
       const url=new URL(route.request().url());
       const symbol=decodeURIComponent(url.pathname.split('/').pop());

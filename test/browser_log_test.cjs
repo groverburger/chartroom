@@ -9,7 +9,8 @@ const path=require('node:path'), os=require('node:os');
  try {
   const page=await browser.newPage({viewport:{width:1440,height:900}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.route('**/yahoo/**',async route=>{
+  await page.route('**/nasdaq/**', route=>route.fulfill({status:503,body:'Provider unavailable in Yahoo regression fixture'}));
+ await page.route('**/yahoo/**',async route=>{
    const url=new URL(route.request().url()), symbol=decodeURIComponent(url.pathname.split('/').pop());
    const interval=url.searchParams.get('interval'), start=1736121600;
    const values=Array.from({length:200},(_,i)=>10*Math.pow(1000,i/199));

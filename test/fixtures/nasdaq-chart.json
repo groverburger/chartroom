@@ -1,0 +1,77 @@
+{
+  "data": {
+    "symbol": "SPY",
+    "company": "State Street SPDR S&P 500 ETF Trust",
+    "timeAsOf": "Sep 22, 2026",
+    "isNasdaq100": false,
+    "lastSalePrice": "$768.36",
+    "netChange": "-5.02",
+    "percentageChange": "-0.65%",
+    "deltaIndicator": "up",
+    "previousClose": "$773.38",
+    "volume": null,
+    "exchange": null,
+    "chart": [
+      {
+        "z": {
+          "high": "763.57",
+          "low": "759.96",
+          "open": "763.15",
+          "close": "762.6",
+          "volume": "49,652,750",
+          "dateTime": "9/17/2026",
+          "value": "762.6"
+        },
+        "x": 1789603200000,
+        "y": 762.6
+      },
+      {
+        "z": {
+          "high": "762",
+          "low": "757.971",
+          "open": "761.31",
+          "close": "761.69",
+          "volume": "65,395,150",
+          "dateTime": "9/18/2026",
+          "value": "761.69"
+        },
+        "x": 1789689600000,
+        "y": 761.69
+      },
+      {
+        "z": {
+          "high": "774.89",
+          "low": "766.03",
+          "open": "766.251",
+          "close": "773.5",
+          "volume": "50,484,690",
+          "dateTime": "9/21/2026",
+          "value": "773.5"
+        },
+        "x": 1789948800000,
+        "y": 773.5
+      },
+      {
+        "z": {
+          "high": "775.14",
+          "low": "772.57",
+          "open": "774.03",
+          "close": "773.38",
+          "volume": "34,802,340",
+          "dateTime": "9/22/2026",
+          "value": "773.38"
+        },
+        "x": 1790035200000,
+        "y": 773.38
+      }
+    ],
+    "volumeChart": null,
+    "events": null
+  },
+  "message": null,
+  "status": {
+    "rCode": 200,
+    "bCodeMessage": null,
+    "developerMessage": null
+  }
+}

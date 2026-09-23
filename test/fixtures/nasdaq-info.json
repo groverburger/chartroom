@@ -1,0 +1,36 @@
+{
+  "data": {
+    "symbol": "SPY",
+    "companyName": "State Street SPDR S&P 500 ETF Trust",
+    "stockType": null,
+    "exchange": "PSE",
+    "isNasdaqListed": false,
+    "isNasdaq100": false,
+    "isHeld": false,
+    "primaryData": {
+      "lastSalePrice": "$768.43",
+      "netChange": "-4.95",
+      "percentageChange": "-0.64%",
+      "deltaIndicator": "down",
+      "lastTradeTimestamp": "Sep 23, 2026 2:10 PM ET",
+      "isRealTime": true,
+      "bidPrice": "$768.42",
+      "askPrice": "$768.43",
+      "bidSize": "40",
+      "askSize": "2186",
+      "volume": "22,745,825.540657",
+      "currency": null
+    },
+    "secondaryData": null,
+    "marketStatus": "Open",
+    "assetClass": "ETF",
+    "keyStats": null,
+    "notifications": []
+  },
+  "message": null,
+  "status": {
+    "rCode": 200,
+    "bCodeMessage": null,
+    "developerMessage": null
+  }
+}

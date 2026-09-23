@@ -252,7 +252,7 @@ int main(int argc, char **argv) {
                        "--import-julia PATH   Copy Julia .chartroom on first launch\n  --offline            "
                        "Use cached data only\n  --smoke FRAMES       Bounded rendering check\n  --hidden     "
                        "        Hidden smoke window\n  --screenshot FILE    Write final smoke frame as PPM\n "
-                       " --fetch SYMBOL       Verify real Yahoo data without a window\n"
+                       " --fetch SYMBOL       Verify market data without a window\n"
                        "  --idle-check SECONDS  Run the event loop for a bounded idle check\n"
                        "  --version            Print build version and timestamp\n";
                 return 0;
@@ -272,14 +272,14 @@ int main(int argc, char **argv) {
                 if (!e.loading && (e.loaded || !e.error.empty())) {
                     if (!e.error.empty())
                         throw std::runtime_error(e.error);
-                    std::cout << symbol << " / " << e.history.bars.size() << " bars / "
-                              << cr::date(e.history.bars.back().time) << " / close "
-                              << e.history.bars.back().close << "\n";
+                    std::cout << symbol << " / " << cr::data_source(e.history) << " / "
+                              << e.history.bars.size() << " bars / " << cr::date(e.history.bars.back().time)
+                              << " / close " << e.history.bars.back().close << "\n";
                     return 0;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(25));
             }
-            throw std::runtime_error("Yahoo fetch timed out");
+            throw std::runtime_error("Market data fetch timed out");
         }
 #endif
         glfwSetErrorCallback(

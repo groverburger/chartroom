@@ -521,8 +521,10 @@ Quote parse_quote(const std::string &body, const std::string &symbol) {
     throw std::runtime_error("Current price or previous session close unavailable");
 }
 std::optional<Quote> quote(const History &h) {
-    if (auto q = metadata_quote(h.meta, h.fetched))
+    if (auto q = metadata_quote(h.meta, h.fetched)) {
+        q->source = h.meta.value("chartroomSource", std::string("Yahoo"));
         return q;
+    }
     if (h.interval != "1d" || h.bars.size() < 2)
         return {};
     auto &last = h.bars.back();
@@ -543,7 +545,9 @@ std::optional<Quote> quote(const History &h) {
             price = current;
         }
     }
-    return Quote{price, (price / prior.close - 1) * 100, asof, h.fetched};
+    return Quote{price, (price / prior.close - 1) * 100,
+                 asof,  h.fetched,
+                 false, h.meta.value("chartroomSource", std::string("Yahoo"))};
 }
 void View::fit(size_t n) {
     count = double(std::min<size_t>(default_count, std::max<size_t>(1, n)));

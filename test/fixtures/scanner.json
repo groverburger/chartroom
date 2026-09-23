@@ -1,0 +1,125 @@
+{
+  "totalCount": 11095,
+  "data": [
+    {
+      "s": "NASDAQ:NVDA",
+      "d": [
+        "NVIDIA Corporation",
+        225.3,
+        -1.5598374623148483,
+        5429729884159.555,
+        "Electronic Technology",
+        49516151,
+        "NASDAQ"
+      ]
+    },
+    {
+      "s": "NASDAQ:AAPL",
+      "d": [
+        "Apple Inc.",
+        337.4812,
+        -0.6677851361295066,
+        4925261273953.001,
+        "Electronic Technology",
+        15727502,
+        "NASDAQ"
+      ]
+    },
+    {
+      "s": "NASDAQ:GOOG",
+      "d": [
+        "Alphabet Inc. Class C",
+        335.4,
+        -3.45701044874933,
+        4126209330450.75,
+        "Technology Services",
+        13527009,
+        "NASDAQ"
+      ]
+    },
+    {
+      "s": "NASDAQ:GOOGL",
+      "d": [
+        "Alphabet Inc. Class A",
+        338.93,
+        -3.4827429092151774,
+        4125109535230.37,
+        "Technology Services",
+        21146800,
+        "NASDAQ"
+      ]
+    },
+    {
+      "s": "NASDAQ:MSFT",
+      "d": [
+        "Microsoft Corporation",
+        499.34,
+        0.2690763052208785,
+        3707871845107.61,
+        "Technology Services",
+        10963216,
+        "NASDAQ"
+      ]
+    },
+    {
+      "s": "NASDAQ:AMZN",
+      "d": [
+        "Amazon.com, Inc.",
+        248.88,
+        -2.3923444976076533,
+        2684497896112.4214,
+        "Retail Trade",
+        25926679,
+        "NASDAQ"
+      ]
+    },
+    {
+      "s": "NASDAQ:SPCX",
+      "d": [
+        "Space Exploration Technologies Corp",
+        149.89,
+        -3.121768355739408,
+        2034167591000.0166,
+        "Communications",
+        31831117,
+        "NASDAQ"
+      ]
+    },
+    {
+      "s": "NASDAQ:META",
+      "d": [
+        "Meta Platforms Inc Class A",
+        751.88,
+        2.0750887529782265,
+        1915418835825.9963,
+        "Technology Services",
+        22022102,
+        "NASDAQ"
+      ]
+    },
+    {
+      "s": "NASDAQ:AVGO",
+      "d": [
+        "Broadcom Inc.",
+        355.32,
+        -2.529214900971094,
+        1696166209719.7883,
+        "Electronic Technology",
+        10888580,
+        "NASDAQ"
+      ]
+    },
+    {
+      "s": "NASDAQ:TSLA",
+      "d": [
+        "Tesla, Inc.",
+        379.52,
+        0.1636315650567444,
+        1498932283823.1565,
+        "Consumer Durables",
+        24337451,
+        "NASDAQ"
+      ]
+    }
+  ]
+}

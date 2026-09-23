@@ -16,6 +16,7 @@ const assert = require('node:assert/strict');
       if(offline) html=html.replace('var Module={','var Module={arguments:["--offline"],');
       await route.fulfill({response,body:html});
     });
+ await page.route('**/nasdaq/**', route=>route.fulfill({status:503,body:'Provider unavailable in Yahoo regression fixture'}));
     await page.route('**/yahoo/**',async route=>{
       requests++;
       const url=new URL(route.request().url());
@@ -85,6 +86,7 @@ const assert = require('node:assert/strict');
     // A fresh online page verifies the actual refresh timer under a virtual clock.
     const live=await browser.newPage({viewport:{width:1440,height:900}});
     let spyHistory=0;
+    await live.route('**/nasdaq/**', route=>route.fulfill({status:503,body:'Provider unavailable in Yahoo regression fixture'}));
     await live.route('**/yahoo/**',async route=>{
       const u=new URL(route.request().url());
       const interval=u.searchParams.get('interval'), symbol=decodeURIComponent(u.pathname.split('/').pop());

@@ -112,6 +112,18 @@ int main() {
             fib.fib.levels[4].color = rgba(12, 34, 56);
             s.drawings.add("SPY", fib);
             s.drawing_tools_open = true;
+            s.options.open = true;
+            s.options.symbol = "AAPL";
+            s.options.puts = true;
+            s.options.expiry = "2026-12-18";
+            s.screener.open = true;
+            s.screener.query.sort = 2;
+            s.screener.query.offset = 100;
+            s.screener.query.min_price = 5;
+            s.screener.query.min_cap = 3;
+            s.screener.query.min_volume = 100000;
+            s.screener.query.sector = "Finance";
+            s.screener.search = "Bank";
             p.show_drawings = false;
             s.save(true);
             expected = s.document();

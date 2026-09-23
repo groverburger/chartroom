@@ -1,0 +1,110 @@
+#include "market.hpp"
+#include <fstream>
+#include <iostream>
+#include <stdexcept>
+#define CHECK(x)                                                                                             \
+    do {                                                                                                     \
+        if (!(x))                                                                                            \
+            throw std::runtime_error(#x);                                                                    \
+    } while (0)
+using namespace cr;
+static std::string fixture(const std::string &dir, const char *name) {
+    std::ifstream file(dir + "/" + name);
+    return {std::istreambuf_iterator<char>(file), {}};
+}
+template <class F> static bool fails(F f) {
+    try {
+        f();
+        return false;
+    } catch (...) {
+        return true;
+    }
+}
+int main(int argc, char **argv) {
+    try {
+        CHECK(argc == 2);
+        std::string dir = argv[1];
+        auto q = nasdaq_quote(fixture(dir, "nasdaq-info.json"), "SPY");
+        CHECK(q.source == "Nasdaq" && q.price == 768.43 && q.change == -.64);
+        CHECK(date(q.asof) == "2026-09-23 18:10");
+        CHECK(date(eastern_time("Jan 15, 2026 9:35 AM ET")) == "2026-01-15 14:35");
+        CHECK(date(eastern_time("Mar 09, 2026 9:35 AM ET")) == "2026-03-09 13:35");
+        CHECK(fails([] { eastern_time("Sep 23, 2026"); }));
+        auto h = nasdaq_history(fixture(dir, "nasdaq-chart.json"), "SPY");
+        CHECK(h.bars.size() == 4 && h.bars.back().close == 773.38);
+        CHECK(quote(h)->source == "Nasdaq");
+        CHECK(date(h.bars.back().time) == "2026-09-22 13:30");
+        CHECK(fails([&] { nasdaq_history(fixture(dir, "nasdaq-chart.json"), "AAPL"); }));
+        auto line = Json::parse(fixture(dir, "nasdaq-chart.json"));
+        for (auto &p : line["data"]["chart"])
+            p["z"].erase("open");
+        CHECK(fails([&] { nasdaq_history(line.dump(), "SPY"); }));
+        auto tail = h;
+        tail.bars = {h.bars.back(), {parse_time("2026-09-23T13:30:00"), 770, 775, 760, 768, 10000}};
+        tail.bars[0].close = 774; // Do not rewrite the completed historical series.
+        auto merged = append_session(h, tail);
+        CHECK(merged.bars.size() == 5 && merged.bars[3].close == 773.38 && merged.bars[4].close == 768);
+        CHECK(data_source(merged) == "Nasdaq + Yahoo latest session");
+        auto chain = parse_options(fixture(dir, "nasdaq-options.json"));
+        CHECK(chain.rows.size() == 5 && chain.rows[0].expiry == "2026-09-23");
+        CHECK(chain.rows.back().expiry == "2026-10-16");
+        CHECK(std::isnan(chain.rows[0].call.interest) && chain.rows[0].call.itm);
+        CHECK(chain.underlying == 768.4);
+        OptionChain sample;
+        sample.underlying = 100;
+        sample.rows = {{"2026-10-16", 90, {}, {}},
+                       {"2026-10-16", 100, {}, {}},
+                       {"2026-10-16", 110, {}, {}},
+                       {"2027-01-15", 101, {}, {}}};
+        CHECK(atm_strike(sample, "2026-10-16") == 100);
+        CHECK(std::string(moneyness(100, 100, 100, false)) == "ATM");
+        CHECK(std::string(moneyness(90, 100, 100, false)) == "ITM");
+        CHECK(std::string(moneyness(110, 100, 100, false)) == "OTM");
+        CHECK(std::string(moneyness(90, 100, 100, true)) == "OTM");
+        CHECK(std::string(moneyness(110, 100, 100, true)) == "ITM");
+        CHECK(std::string(moneyness(90, missing, missing, true)) == "--");
+        sample.underlying = 105;
+        CHECK(atm_strike(sample, "2026-10-16") == 100);
+        CHECK(!valid_expiry("2026-02-30") && valid_expiry("2028-02-29"));
+        auto dates = parse_option_dates(fixture(dir, "nasdaq-expiries.json"));
+        CHECK(dates.dates.front() == "2026-09-23" && !dates.complete);
+        CHECK(dates.dates.back() == "2029-01-19");
+        auto page = Json::parse(fixture(dir, "nasdaq-options.json"));
+        page["data"]["table"]["rows"] = Json::array({page["data"]["table"]["rows"].back()});
+        auto page2 = parse_options(page.dump()); // Pagination can start mid-expiry without a header.
+        CHECK(page2.rows[0].expiry == "2026-10-16");
+        auto size = chain.rows.size();
+        merge_options(chain, std::move(page2));
+        CHECK(chain.rows.size() == size);
+        auto scanner = parse_screen(fixture(dir, "scanner.json"));
+        CHECK(scanner.total > 100 && scanner.rows[0].symbol == "NVDA" && scanner.rows[0].cap > 1e12);
+        ScreenQuery query;
+        query.sort = 2;
+        query.offset = 100;
+        query.min_price = 10;
+        query.min_cap = 1;
+        query.sector = "Finance";
+        auto request = scanner_request(query);
+        CHECK(request["sort"]["sortOrder"] == "asc" && request["range"][0] == 100 &&
+              request["range"][1] == 200);
+        CHECK(request["filter"].size() == 6);
+        auto nulls = Json::parse(fixture(dir, "scanner.json"));
+        nulls["data"][0]["d"][1] = nullptr;
+        CHECK(std::isnan(parse_screen(nulls.dump()).rows[0].price));
+        auto crypto =
+            binance_history("[[1700000000000,\"100\",\"110\",\"90\",\"105\",\"10\"]]", "BTCUSDT", "1d");
+        CHECK(crypto.currency == "USDT" && crypto.bars[0].close == 105);
+        auto cq = binance_quote(R"({"lastPrice":"105","priceChangePercent":"5","closeTime":1700000000000})");
+        CHECK(cq.rolling && cq.source == "Binance");
+        CHECK(fails([] { stooq_history("<html>challenge</html>", "SPY"); }));
+        auto csv = stooq_history("Date,Open,High,Low,Close,Volume\n2026-09-22,10,12,9,11,1000\n", "SPY");
+        CHECK(csv.bars.size() == 1 && csv.bars[0].close == 11);
+        CHECK(nasdaq_symbol("SPY") && !nasdaq_symbol("BTC-USD") && !nasdaq_symbol("ES=F") &&
+              !nasdaq_symbol("^VIX"));
+        std::cout << "Provider schemas, timestamps, incomplete OHLC, options pagination and scanner filters "
+                     "passed\n";
+    } catch (const std::exception &e) {
+        std::cerr << e.what() << '\n';
+        return 1;
+    }
+}

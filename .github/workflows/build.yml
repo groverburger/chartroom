@@ -37,6 +37,7 @@ jobs:
             vendor/imgui/LICENSE.txt
             vendor/glfw/LICENSE.md
             vendor/json/LICENSE.MIT
+            vendor/OpenTerminal-LICENSE.txt
   web:
     runs-on: ubuntu-24.04
     steps:
@@ -65,3 +66,4 @@ jobs:
             vendor/imgui/LICENSE.txt
             vendor/glfw/LICENSE.md
             vendor/json/LICENSE.MIT
+            vendor/OpenTerminal-LICENSE.txt

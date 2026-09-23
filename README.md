@@ -13,11 +13,13 @@ This repository contains the C++20 application, which runs on desktop and in the
 - **Chart styles:** candlesticks, OHLC bars, or a line chart, with volume and round-number price levels.
 - **Drawings and measurement:** a detachable tools window with saved horizontal levels, trendlines, rays, rectangles, text notes, and Fibonacci retracements, with locking and undo/redo. Shift-drag to measure price changes and elapsed time.
 - **Technical indicators:** SMA, EMA, Bollinger Bands, RSI, MACD, ATR, and an MA ribbon with trend-colored bars.
+- **Options chains:** Nasdaq calls and puts by expiry, with bid/ask, last price, volume, open interest, and in-the-money shading.
+- **Stock screener:** largest companies, gainers, losers, and most active US stocks, with price, capitalization, volume, and sector filters.
 - **Watchlists:** SPY, BTC, GLD, VIX, QQQ, and RSP are pinned above a large-cap list. Create custom lists for other symbols.
 - **Event-driven rendering:** redraws for input, data changes, and UI timers, then sleeps when idle. Minimized windows and hidden browser tabs skip rendering.
 - **Saved workspaces:** charts, indicators, colors, layouts, watchlists, and chart positions persist between sessions. Cached history is available offline.
 
-SPY opens on first launch. Market data comes from Yahoo Finance, with updates approximately once per minute for open charts.
+SPY opens on first launch. Chartroom uses public market-data endpoints from Nasdaq, TradingView, Yahoo Finance, Binance, and Stooq. Open charts and market windows update approximately once per minute.
 
 ## Build and run
 
@@ -77,7 +79,7 @@ python3 scripts/serve_web.py --directory build-web --port 8080
 
 Open <http://localhost:8080/chartroom.html> in a browser with WebGL2 support. The canvas supports high-DPI displays, including Retina screens.
 
-The preview server serves the application and proxies its Yahoo Finance requests. A public deployment needs an equivalent data proxy because Yahoo's chart endpoint cannot be accessed directly from the browser under CORS. Hosting only the HTML, JavaScript, and Wasm files will not provide market data. The included server binds to localhost and is intended for development.
+The preview server serves the application and proxies a fixed set of provider routes, including POST requests for the stock screener. A public deployment needs an equivalent data proxy because these endpoints do not support direct browser access under CORS. Hosting only the HTML, JavaScript, and Wasm files will not provide market data. The included server binds to localhost and is intended for development.
 
 ## Using Chartroom
 
@@ -101,7 +103,7 @@ Panning can extend beyond the available history. Vertical scaling stays automati
 
 Trackpad scrolling follows the gesture's initial direction: horizontal swipes pan, while vertical swipes zoom. Small diagonal movements and momentum do not switch between the two.
 
-Each chart shows **Updated** with the UTC time of its last successful data refresh. Hover over the timestamp for Yahoo’s price timestamp and cache/refresh status. Failed refreshes retain the last successful time.
+Each chart shows **Updated** with the UTC time of its last successful data refresh. Hover over the timestamp for the provider’s price timestamp and cache/refresh status. Failed refreshes retain the last successful time.
 
 Logarithmic mode gives equal percentage moves equal vertical distance. The setting is saved per chart and copied when duplicating a chart. Candles, price overlays, crosshairs, and drawings share the scale; volume and oscillator panes retain their own axes. Auto-fit remains active. If visible price data or an overlay includes zero or negative values, the chart temporarily uses linear scaling and shows a notice. Fibonacci levels retain their configured arithmetic price ratios.
 
@@ -144,17 +146,42 @@ Historical ribbon values are aligned without looking ahead to future source bars
 
 ### Watchlists
 
-Create a custom list, then enter symbols to add them. Right-click a symbol to reorder or remove it. Lists can also be renamed or deleted. Sidebar percentages use Yahoo’s current regular-session price and explicit previous close, refreshing approximately every minute for symbols in the selected watchlist and open charts. Requests are staggered, and stale or failed quotes appear muted; hover for the quote time or error. Chart refreshes also request a fresh sidebar quote.
+Create a custom list, then enter symbols to add them. Right-click a symbol to reorder or remove it. Lists can also be renamed or deleted. Sidebar percentages use Nasdaq snapshots where supported, with Yahoo’s current regular-session price and explicit previous close as a fallback. They refresh approximately every minute for symbols in the selected watchlist and open charts. Requests are staggered, and stale or failed quotes appear muted; hover for the quote time or error. Chart refreshes also request a fresh sidebar quote.
+
+### Options and screener
+
+Use **Market → Options** or **Market → Screener** in the sidebar. Both are movable, dockable windows; desktop builds can detach them outside the main window. Their open state, position, and settings are saved.
+
+The options window starts with the active chart's symbol. Enter another underlying and press **Load**, or select **Use active chart**. Choose an **Expiry** and switch between **Calls** and **Puts**. Only one side is displayed at a time, with higher strikes at the top. Muted cyan and purple row shading, drawn from the MA ribbon palette, distinguish **ITM** and **OTM**. A subtle neutral highlight marks the nearest listed strike (**ATM**). Moneyness uses the underlying price in the chain snapshot; a tie between nearest strikes marks the lower strike as ATM. New selections scroll to ATM automatically; `--` means the provider did not supply a value. Open interest and volume are contract counts. **Open underlying chart** returns to analysis of the underlying; this view does not chart option contracts or place trades.
+
+Opening Options performs a one-row expiry lookup, then loads contracts only for the selected expiry. Opening the expiry picker discovers the remaining dates from Nasdaq's near-money rows; the date list is cached for a day. Each expiry has its own cache. Calls and puts for that expiry arrive together, so switching sides needs no request. Revisiting a recently loaded expiry uses its cache immediately. Requests paginate within that expiry if necessary, with a notice if the provider's 20,000-row limit is reached. This view supports Nasdaq's US stock and ETF options, without calculated Greeks or implied volatility.
+
+The screener covers common stocks listed on Nasdaq, NYSE, and AMEX. Choose **Largest companies**, **Top gainers**, **Top losers**, or **Most active**. Expand **Filters** to set minimum price, market capitalization in billions of dollars, share volume, or an exact provider sector name, then **Apply filters**. Results are paginated in groups of 100; **Find on this page** searches only the current page.
+
+Click a result to load its chart, or Ctrl/Cmd-click to open a new chart. Right-click for options or to add the symbol to the current watchlist. Screeners and chains refresh every 60 seconds while open, stop polling when closed, and retain the last successful snapshot on errors. The last chain for each underlying/expiry and the last screener page are cached for offline use.
 
 ## Market data
 
-Chartroom uses Yahoo Finance OHLC history and retains downloaded data in a local cache. Supported timeframes are 1h, 4h, 1D, and 1W. Hourly requests cover up to 729 days; daily and weekly requests use the available history. Four-hour candles are aggregated in UTC buckets.
+Chartroom uses the public endpoints identified in [OpenTerminal](https://github.com/ErTasselli/OpenTerminal), accessed directly without running its server or requiring API keys:
 
-Open charts and custom indicator source series refresh approximately every 60 seconds, using recent minute data and overlapping history to update candles. Charts positioned at the latest candle follow new bars; historical views retain their position. If a download fails, cached data remains available and the application retries later.
+| Data | Provider behavior |
+| --- | --- |
+| US stock/ETF daily history | Nasdaq chart OHLC, supplemented with later Yahoo daily sessions so an active candle can update; Yahoo fallback, then Stooq end-of-day CSV |
+| US stock/ETF sidebar quotes | Nasdaq quote info, falling back to Yahoo minute metadata |
+| Hourly/weekly history, futures, indices, USD crypto composites | Yahoo chart endpoint |
+| Explicit crypto pairs such as `BTCUSDT` | Binance klines and 24-hour ticker |
+| Options chains | Nasdaq option-chain endpoint |
+| US stock screener | TradingView America scanner |
+
+The chart status identifies the actual provider and quote currency. `BTC`, `ETH`, and `SOL` retain their Yahoo USD composites. Binance pairs must be entered explicitly: USDT prices are not silently substituted for USD prices, and their sidebar percentages represent a rolling 24-hour change. Binance currently loads up to 1,000 candles per interval and accumulates updates in its cache. Access depends on region; if Binance is unavailable, use a USD composite for a separate chart.
+
+Supported timeframes are 1h, 4h, 1D, and 1W. Yahoo hourly requests cover up to 729 days; other history is limited to what the provider returns. Four-hour candles are aggregated in UTC buckets. Provider changes replace the cached series instead of mixing historical price adjustments. Nasdaq daily candles represent completed sessions; if the Yahoo supplement fails, a provider notice identifies the missing current-session update. Line-only responses are never turned into artificial OHLC candles.
+
+Open charts and custom indicator source series refresh approximately every 60 seconds. Charts positioned at the latest candle follow new bars; historical views retain their position. Downloads run asynchronously. A failed refresh retains cached data and retries later.
 
 Invalid zero-price VIX candles are rejected, including ones saved by older builds. Recent daily VIX candles can be rebuilt from hourly data when every expected hourly bucket is available, using Yahoo’s session boundaries. Rebuilt candles are identified in the chart status; incomplete coverage leaves the candle unavailable or retains a previously valid cached candle.
 
-Yahoo Finance is an unofficial snapshot source: prices may be delayed, requests may be rate-limited, and history may contain gaps. Chartroom does not substitute synthetic prices when data is unavailable. Prices use the provider's OHLC values rather than adjusted close. Futures use Yahoo's `=F` symbols without additional contract-roll adjustments.
+These public endpoints may return delayed data, change without notice, restrict access by region, or rate-limit requests. Stooq may require browser verification and is used only when valid CSV is returned. Chartroom does not substitute synthetic prices when data is unavailable. Prices use the provider's OHLC values rather than adjusted close. Futures use Yahoo's `=F` symbols without additional contract-roll adjustments.
 
 ## Saved state and offline use
 
@@ -175,7 +202,7 @@ Desktop command-line options include:
 | --- | --- |
 | `--data-dir PATH` | Use a different workspace and cache directory |
 | `--offline` | Open using cached history without downloading updates |
-| `--fetch SYMBOL` | Check the Yahoo data connection without opening a window |
+| `--fetch SYMBOL` | Check the market-data connection without opening a window |
 | `--import-julia PATH` | Import a workspace from the Julia version on first launch |
 | `--version` | Print the build version and UTC build time |
 | `--help` | List all available options |
@@ -226,11 +253,15 @@ CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_build_test.
 CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_vix_test.cjs
 CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_quote_test.cjs
 CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_log_test.cjs
+CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_market_test.cjs
+CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_options_test.cjs
 ```
 
 Set `PLAYWRIGHT_MODULE` if Playwright is outside the normal Node module path, or `CHROMIUM_EXECUTABLE` to use a specific Chromium binary. The tests cover data loading, navigation, drawing gestures, undo/redo, measurement, multiple charts, persistence, resizing, pixel-density changes, Fibonacci settings, floating-window persistence, build update notices, idle rendering, and background refresh deadlines.
 
 For a bounded desktop idle check, run the executable with `--idle-check 10`. It prints frame and wake counts after ten seconds, including startup. Add `--offline` to exclude network updates and use `--data-dir PATH` for an isolated workspace. In the browser, `Module.chartroomStats` exposes frame and wake counts in the developer console.
+
+Run `python3 test/proxy_test.py` to check the browser proxy route validation without network access.
 
 The main source files are:
 
@@ -240,6 +271,7 @@ The main source files are:
 | [drawings.cpp](src/drawings.cpp), [drawing_ui.cpp](src/drawing_ui.cpp) | Drawing anchors, edit history, measurement, and chart interactions |
 | [state.cpp](src/state.cpp), [state.hpp](src/state.hpp) | Data updates, caches, watchlists, and workspace persistence |
 | [net.cpp](src/net.cpp), [net.hpp](src/net.hpp) | Desktop and browser HTTP requests |
+| [market.cpp](src/market.cpp), [providers.cpp](src/providers.cpp), [market_ui.cpp](src/market_ui.cpp) | Provider schemas, fallback routing, options chains, and screener |
 | [app.cpp](src/app.cpp) | Interface and chart rendering |
 | [main.cpp](src/main.cpp), [render_schedule.cpp](src/render_schedule.cpp), [scheduler.js](web/scheduler.js) | Platform startup, event scheduling, UI deadlines, and command-line options |
 

@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <functional>
 namespace cr {
+void market_windows(State &);
 static constexpr ImU32 bg = rgba(11, 16, 23), grid = rgba(31, 41, 51), muted = rgba(117, 140, 163),
                        ink = rgba(219, 230, 240);
 static std::string fmt(double n, int digits = 2) {
@@ -87,6 +88,11 @@ static void row(State &s, const std::string &symbol, bool pinned) {
     if (ImGui::BeginPopupContextItem("Ticker")) {
         if (ImGui::MenuItem("Open in new chart"))
             s.add(symbol);
+        if (ImGui::MenuItem("Options")) {
+            s.options.symbol = symbol;
+            s.options.open = s.options.focus = true;
+            s.refresh_options();
+        }
         auto &list = s.lists[size_t(s.selected_list)];
         auto it = std::find(list.symbols.begin(), list.symbols.end(), symbol);
         if (pinned) {
@@ -117,8 +123,9 @@ static void row(State &s, const std::string &symbol, bool pinned) {
         ImGui::BeginTooltip();
         ImGui::TextUnformatted(symbol.c_str());
         if (it != s.quotes.end()) {
-            text(ink, fmt(it->second.price) + " / " + label + " versus previous daily close");
-            text(muted, "As of " + date(it->second.asof) + " UTC");
+            text(ink, fmt(it->second.price) + " / " + label +
+                          (it->second.rolling ? " over 24 hours" : " versus previous daily close"));
+            text(muted, it->second.source + " / As of " + date(it->second.asof) + " UTC");
         }
         if (s.quote_errors.count(symbol))
             text(gold, s.quote_errors[symbol]);
@@ -173,6 +180,21 @@ static void watchlist(State &s) {
             s.add("", true);
         if (ImGui::MenuItem("Close active chart", nullptr, false, s.panels.size() > 1))
             s.current().open = false;
+        ImGui::EndPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Market"))
+        ImGui::OpenPopup("Market");
+    if (ImGui::BeginPopup("Market")) {
+        if (ImGui::MenuItem("Options", nullptr, s.options.open)) {
+            s.options.open = s.options.focus = true;
+            s.options.symbol = s.current().symbol;
+            s.refresh_options();
+        }
+        if (ImGui::MenuItem("Screener", nullptr, s.screener.open)) {
+            s.screener.open = s.screener.focus = true;
+            s.refresh_screener();
+        }
         ImGui::EndPopup();
     }
     static char jump[64]{};
@@ -407,7 +429,7 @@ static void toolbar(State &s, Panel &p) {
         if (series.loaded) {
             auto time = series.history.meta.find("regularMarketTime");
             if (time != series.history.meta.end() && time->is_number_integer() && time->get<Time>() > 0)
-                ImGui::Text("Yahoo price as of %s UTC", date(time->get<Time>(), "%Y-%m-%d %H:%M:%S").c_str());
+                ImGui::Text("Price as of %s UTC", date(time->get<Time>(), "%Y-%m-%d %H:%M:%S").c_str());
         }
         if (s.offline)
             ImGui::TextUnformatted("Showing offline cached data.");
@@ -448,8 +470,8 @@ static void toolbar(State &s, Panel &p) {
         ImGui::TextUnformatted("Arrows / A, D: pan. Home / End: oldest / latest.");
         ImGui::TextUnformatted("Double-click: latest. Pan beyond either end of history.");
         ImGui::Separator();
-        ImGui::TextUnformatted("Yahoo snapshots / active series poll every 60 seconds.");
-        ImGui::TextUnformatted("Sidebar changes are versus the previous daily close.");
+        ImGui::TextUnformatted("Provider snapshots / active series poll every 60 seconds.");
+        ImGui::TextUnformatted("Sidebar changes: previous close; Binance pairs: rolling 24h.");
         ImGui::TextUnformatted("4h candles use UTC buckets. Futures use Yahoo =F series.");
         ImGui::TextUnformatted("Crypto minute-rebuilt candles have unavailable volume.");
         if (series.loaded)
@@ -728,7 +750,7 @@ static void chart(State &s, Panel &p) {
         if (e.history.meta.contains("chartroomHourlyRecoveredTimes") &&
             !e.history.meta["chartroomHourlyRecoveredTimes"].empty())
             status += " / hourly-rebuilt candles";
-        text(muted, "Yahoo / " + e.history.currency + " / " + status + " / Bar opened " +
+        text(muted, data_source(e.history) + " / " + e.history.currency + " / " + status + " / Bar opened " +
                         date(p.bars.back().time) + " UTC");
     }
 }
@@ -757,6 +779,12 @@ void frame(State &s, bool update) {
                     ImGui::SetTooltip("%s", e.error.c_str());
             }
             if (e.loaded) {
+                auto provider_notice = e.history.meta.value("chartroomProviderNotice", std::string{});
+                if (!provider_notice.empty()) {
+                    text(gold, "Current session unavailable / showing available history");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", provider_notice.c_str());
+                }
                 auto warning = e.history.meta.value("chartroomRecoveryError", std::string{});
                 if (!warning.empty()) {
                     text(gold, "Some recent candles could not be recovered");
@@ -773,14 +801,15 @@ void frame(State &s, bool update) {
                     }
                 }
             if (p.bars.empty())
-                ImGui::TextUnformatted(s.offline ? "No cached history. Start online to load Yahoo data."
-                                                 : "Loading Yahoo Finance history...");
+                ImGui::TextUnformatted(s.offline ? "No cached history. Start online to load market data."
+                                                 : "Loading market history...");
             else
                 chart(s, p);
         }
         ImGui::End();
     }
     drawing_tools_window(s);
+    market_windows(s);
     s.remove_closed();
     if (ImGui::GetIO().WantSaveIniSettings) {
         s.ini = ImGui::SaveIniSettingsToMemory();

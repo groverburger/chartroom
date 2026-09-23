@@ -14,6 +14,13 @@
 #include <vector>
 #endif
 namespace cr {
+void Network::get(std::string url, Callback callback) {
+    request(std::move(url), {}, false, std::move(callback));
+}
+void Network::post(std::string url, std::string body, Callback callback) {
+    request(std::move(url), std::move(body), true, std::move(callback));
+}
+
 #ifdef __EMSCRIPTEN__
 struct Network::Impl {
     struct Done {
@@ -34,42 +41,61 @@ void Network::poll() {
 void Network::set_wakeup(std::function<void()> wakeup) {
     impl->wakeup = std::move(wakeup);
 }
-void Network::get(std::string url, Callback callback) {
-    // The accompanying web server forwards this fixed Yahoo route. No open proxy.
-    const std::string origin = "https://query1.finance.yahoo.com";
-    if (url.starts_with(origin))
-        url = "/yahoo" + url.substr(origin.size());
+void Network::request(std::string url, std::string body, bool post, Callback callback) {
+    // Fixed provider origins only; the preview server validates every route and parameter.
+    for (auto [origin, route] : {std::pair{"https://query1.finance.yahoo.com/", "/yahoo/"},
+                                 {"https://api.nasdaq.com/", "/nasdaq/"},
+                                 {"https://api.binance.com/", "/binance/"},
+                                 {"https://scanner.tradingview.com/", "/scanner/"},
+                                 {"https://stooq.com/", "/stooq/"}}) {
+        if (url.starts_with(origin)) {
+            url = std::string(route) + url.substr(std::strlen(origin));
+            break;
+        }
+    }
+    struct Pending {
+        Callback callback;
+        std::string body;
+    };
     auto cb =
-        new Callback([this, callback = std::move(callback)](std::string body, std::string error) mutable {
-            impl->done.push_back({std::move(callback), std::move(body), std::move(error)});
-            if (impl->wakeup)
-                impl->wakeup();
-        });
+        new Pending{[this, callback = std::move(callback)](std::string body, std::string error) mutable {
+                        impl->done.push_back({std::move(callback), std::move(body), std::move(error)});
+                        if (impl->wakeup)
+                            impl->wakeup();
+                    },
+                    std::move(body)};
     emscripten_fetch_attr_t attr;
     emscripten_fetch_attr_init(&attr);
-    std::strcpy(attr.requestMethod, "GET");
+    std::strcpy(attr.requestMethod, post ? "POST" : "GET");
+    static const char *headers[] = {"Content-Type", "application/json", nullptr};
+    if (post) {
+        attr.requestHeaders = headers;
+        attr.requestData = cb->body.data();
+        attr.requestDataSize = cb->body.size();
+    }
     attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY;
     attr.timeoutMSecs = 25000;
     attr.userData = cb;
     attr.onsuccess = [](emscripten_fetch_t *f) {
-        std::unique_ptr<Callback> cb(static_cast<Callback *>(f->userData));
+        std::unique_ptr<Pending> cb(static_cast<Pending *>(f->userData));
         std::string body(f->data, f->numBytes);
         emscripten_fetch_close(f);
-        (*cb)(std::move(body), "");
+        cb->callback(std::move(body), "");
     };
     attr.onerror = [](emscripten_fetch_t *f) {
-        std::unique_ptr<Callback> cb(static_cast<Callback *>(f->userData));
-        std::string error = "Yahoo request failed (HTTP " + std::to_string(f->status) +
+        std::unique_ptr<Pending> cb(static_cast<Pending *>(f->userData));
+        std::string error = "Market data request failed (HTTP " + std::to_string(f->status) +
                             "). Run the supplied web server for data access.";
         emscripten_fetch_close(f);
-        (*cb)("", std::move(error));
+        cb->callback("", std::move(error));
     };
     emscripten_fetch(&attr, url.c_str());
 }
 #else
 struct Network::Impl {
     struct Job {
-        std::string url;
+        std::string url, body;
+        bool post;
         Callback callback;
     };
     struct Done {
@@ -113,7 +139,27 @@ struct Network::Impl {
                 d.error = "Could not initialize HTTP client";
             } else {
                 curl_easy_setopt(curl, CURLOPT_URL, job.url.c_str());
-                curl_easy_setopt(curl, CURLOPT_USERAGENT, "Chartroom/0.1");
+                curl_easy_setopt(curl, CURLOPT_USERAGENT,
+                                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                                 "(KHTML, like Gecko) Chrome/126.0 Safari/537.36");
+                if (job.url.starts_with("https://query1.finance.yahoo.com/"))
+                    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Chartroom/0.1");
+                curl_slist *headers = nullptr;
+                headers = curl_slist_append(headers, "Accept: application/json");
+                if (job.url.starts_with("https://api.nasdaq.com/")) {
+                    headers = curl_slist_append(headers, "Origin: https://www.nasdaq.com");
+                    headers = curl_slist_append(headers, "Referer: https://www.nasdaq.com/");
+                } else if (job.url.starts_with("https://scanner.tradingview.com/")) {
+                    headers = curl_slist_append(headers, "Origin: https://www.tradingview.com");
+                    headers = curl_slist_append(headers, "Referer: https://www.tradingview.com/");
+                }
+                if (job.post) {
+                    headers = curl_slist_append(headers, "Content-Type: application/json");
+                    curl_easy_setopt(curl, CURLOPT_POST, 1L);
+                    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, job.body.c_str());
+                    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, long(job.body.size()));
+                }
+                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
                 curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
                 curl_easy_setopt(curl, CURLOPT_TIMEOUT, 25L);
                 curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 8L);
@@ -133,10 +179,10 @@ struct Network::Impl {
                 curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
                 if (code != CURLE_OK)
                     d.error = curl_easy_strerror(code);
-                else if (status != 200 && status != 404 && status != 422)
-                    d.error =
-                        "Yahoo HTTP " + std::to_string(status) + (status == 429 ? " / rate limited" : "");
+                else if (status < 200 || status >= 300)
+                    d.error = "HTTP " + std::to_string(status) + (status == 429 ? " / rate limited" : "");
                 curl_easy_cleanup(curl);
+                curl_slist_free_all(headers);
             }
             std::function<void()> notify;
             {
@@ -165,10 +211,10 @@ void Network::set_wakeup(std::function<void()> wakeup) {
     std::lock_guard lock(impl->mutex);
     impl->wakeup = std::move(wakeup);
 }
-void Network::get(std::string url, Callback callback) {
+void Network::request(std::string url, std::string body, bool post, Callback callback) {
     {
         std::lock_guard lock(impl->mutex);
-        impl->jobs.push_back({std::move(url), std::move(callback)});
+        impl->jobs.push_back({std::move(url), std::move(body), post, std::move(callback)});
     }
     impl->cv.notify_one();
 }

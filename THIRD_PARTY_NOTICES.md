@@ -8,3 +8,8 @@ Chartroom C++ uses these third-party components:
 - Emscripten runtime for browser builds; MIT/UIUC. https://github.com/emscripten-core/emscripten/blob/main/LICENSE
 
 Pinned vendored source versions are listed in vendor/README.md.
+
+Public market-data integration is informed by [OpenTerminal](https://github.com/ErTasselli/OpenTerminal),
+Copyright (c) 2026 OpenTerminal contributors, MIT. Its license is included in
+[vendor/OpenTerminal-LICENSE.txt](vendor/OpenTerminal-LICENSE.txt). Chartroom uses the providers directly;
+it does not require an OpenTerminal installation.

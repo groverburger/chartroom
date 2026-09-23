@@ -16,6 +16,7 @@ const assert = require('node:assert/strict');
       regularMarketTime:clock+p*60,previousClose:base(s),chartPreviousClose:50});
     const snapshot=(s,p=phase)=>({chart:{error:null,result:[{meta:metadata(s,p),timestamp:null,indicators:{quote:[{}]}}]}});
     await page.clock.install({time:new Date(clock*1000)});
+ await page.route('**/nasdaq/**', route=>route.fulfill({status:503,body:'Provider unavailable in Yahoo regression fixture'}));
     await page.route('**/yahoo/**',async route=>{
       const url=new URL(route.request().url()), s=decodeURIComponent(url.pathname.split('/').pop());
       const interval=url.searchParams.get('interval');

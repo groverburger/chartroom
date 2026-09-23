@@ -9,10 +9,12 @@ class Network {
     Network();
     ~Network();
     void get(std::string url, Callback callback);
+    void post(std::string url, std::string body, Callback callback);
     void poll();
     void set_wakeup(std::function<void()>);
 
   private:
+    void request(std::string url, std::string body, bool post, Callback callback);
     struct Impl;
     std::unique_ptr<Impl> impl;
 };
