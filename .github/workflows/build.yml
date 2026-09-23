@@ -1,0 +1,67 @@
+name: Build Chartroom
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  native:
+    strategy:
+      matrix:
+        os: [macos-14, windows-2022, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev libgl1-mesa-dev xorg-dev libwayland-dev libxkbcommon-dev
+      - name: Windows dependencies
+        if: runner.os == 'Windows'
+        run: vcpkg install curl:x64-windows
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        run: cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+      - name: Configure Unix
+        if: runner.os != 'Windows'
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build build --config Release --parallel
+      - run: ctest --test-dir build -C Release --output-on-failure
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chartroom-${{ matrix.os }}
+          path: |
+            build/chartroom.app
+            build/Release/*.exe
+            build/Release/*.dll
+            build/chartroom
+            build/build-info.json
+            build/Release/build-info.json
+            THIRD_PARTY_NOTICES.md
+            assets/Roboto-LICENSE.txt
+            vendor/imgui/LICENSE.txt
+            vendor/glfw/LICENSE.md
+            vendor/json/LICENSE.MIT
+  web:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Emscripten
+        run: |
+          git clone --depth 1 --branch 4.0.23 https://github.com/emscripten-core/emsdk.git /tmp/emsdk
+          /tmp/emsdk/emsdk install 4.0.23
+          /tmp/emsdk/emsdk activate 4.0.23
+      - name: Build WebAssembly
+        run: |
+          source /tmp/emsdk/emsdk_env.sh
+          emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          cmake --build build-web --parallel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chartroom-web
+          path: |
+            build-web/chartroom.html
+            build-web/chartroom.js
+            build-web/chartroom.wasm
+            build-web/build-info.json
+            scripts/serve_web.py
+            THIRD_PARTY_NOTICES.md
+            assets/Roboto-LICENSE.txt
+            vendor/imgui/LICENSE.txt
+            vendor/glfw/LICENSE.md
+            vendor/json/LICENSE.MIT

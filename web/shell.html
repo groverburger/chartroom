@@ -1,0 +1,6 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Chartroom</title><style>html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#0b1017;color:#dbe6f0;font:16px sans-serif}canvas{display:block;width:100%;height:100%;outline:none}#status{position:absolute;top:16px;left:16px;pointer-events:none}</style></head><body><div id="status">Loading Chartroom…</div><canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas><script>
+var Module={canvas:document.getElementById('canvas'),setStatus:function(text){var status=document.getElementById('status');if(status)status.textContent=text;},onRuntimeInitialized:function(){var status=document.getElementById('status');if(status)status.remove();}};
+Module.canvas.width=innerWidth;Module.canvas.height=innerHeight;
+// GLFW handles CSS-size changes; C++ maintains the device-pixel backing size.
+</script>{{{ SCRIPT }}}</body></html>

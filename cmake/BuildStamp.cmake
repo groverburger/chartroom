@@ -1,0 +1,20 @@
+# One sequence across native/web build directories. The lock also covers parallel builds.
+file(LOCK "${SOURCE_DIR}/.build-sequence.lock" GUARD PROCESS TIMEOUT 60)
+set(sequence 0)
+if(EXISTS "${SOURCE_DIR}/.build-sequence")
+  file(READ "${SOURCE_DIR}/.build-sequence" sequence)
+  string(STRIP "${sequence}" sequence)
+  if(NOT sequence MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "Invalid .build-sequence counter")
+  endif()
+endif()
+math(EXPR sequence "${sequence} + 1")
+file(WRITE "${SOURCE_DIR}/.build-sequence.tmp" "${sequence}\n")
+file(RENAME "${SOURCE_DIR}/.build-sequence.tmp" "${SOURCE_DIR}/.build-sequence")
+string(TIMESTAMP built_at "%Y-%m-%dT%H:%M:%SZ" UTC)
+file(MAKE_DIRECTORY "${BINARY_DIR}/generated")
+file(WRITE "${BINARY_DIR}/generated/build_version.hpp"
+"#pragma once\n#include <cstdint>\nnamespace cr::build {\ninline constexpr uint64_t number = ${sequence};\ninline constexpr char version[] = \"${VERSION}+${sequence}\";\ninline constexpr char timestamp[] = \"${built_at}\";\n}\n")
+file(WRITE "${BINARY_DIR}/generated/build-info.pending.json"
+"{\"version\":\"${VERSION}+${sequence}\",\"build_number\":${sequence},\"built_at\":\"${built_at}\",\"platform\":\"${PLATFORM}\"}\n")
+message(STATUS "Chartroom ${VERSION}+${sequence} (${PLATFORM})")

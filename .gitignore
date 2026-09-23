@@ -1,0 +1,9 @@
+build*/
+.chartroom/
+imgui.ini
+.DS_Store
+
+__pycache__/
+node_modules/
+
+.build-sequence*
