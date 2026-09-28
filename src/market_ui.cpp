@@ -30,8 +30,8 @@ static void status(bool offline, bool loading, Time fetched, const std::string &
     if (loading)
         ImGui::TextDisabled("Refreshing...");
     if (fetched)
-        ImGui::TextDisabled("%s %s UTC", offline ? "Offline snapshot" : "Updated",
-                            date(fetched, "%Y-%m-%d %H:%M:%S").c_str());
+        ImGui::TextDisabled("%s %s", offline ? "Offline snapshot" : "Updated",
+                            local_date(fetched, "%Y-%m-%d %H:%M:%S %Z").c_str());
     else if (offline)
         ImGui::TextDisabled("No cached snapshot for these settings.");
     if (!error.empty()) {
@@ -126,13 +126,41 @@ static void options_window(State &s) {
     ImGui::SameLine();
     if (ImGui::RadioButton("Puts", o.puts))
         o.puts = true;
+    auto target = s.option_target();
+    std::string target_label = target ? display_symbol(target->symbol) + " " + timeframes[target->tf] +
+                                            " / Chart " + std::to_string(target->id)
+                                      : "Open an underlying chart";
+    ImGui::SetNextItemWidth(230);
+    if (ImGui::BeginCombo("Linked chart", target_label.c_str())) {
+        for (auto &p : s.panels)
+            if (p->symbol == o.symbol && p->open) {
+                auto label =
+                    display_symbol(p->symbol) + " " + timeframes[p->tf] + " / Chart " + std::to_string(p->id);
+                if (ImGui::Selectable(label.c_str(), p.get() == target)) {
+                    o.target_chart = p->id;
+                    target = p.get();
+                }
+            }
+        ImGui::EndCombo();
+    }
+    if (target) {
+        ImGui::SameLine();
+        ImGui::Checkbox("Strike ladder", &target->option_ladder);
+        if (target->option_ladder) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(130);
+            int metric = target->ladder_volume ? 1 : 0;
+            if (ImGui::Combo("##ladder-metric", &metric, "Open interest\0Volume\0"))
+                target->ladder_volume = metric == 1;
+        }
+    }
     if (o.dates_loading && o.expiry.empty())
         ImGui::TextDisabled("Loading expiries...");
     if (o.expiry.empty() && !o.dates_error.empty())
         ImGui::TextWrapped("%s", o.dates_error.c_str());
     status(s.offline, o.loading, o.data.fetched, o.error);
-    if (!o.data.last_trade.empty())
-        ImGui::TextWrapped("%s", o.data.last_trade.c_str());
+    if (std::isfinite(o.data.underlying))
+        ImGui::Text("Underlying: %.2f", o.data.underlying);
     // Use the ribbon's hues as low-opacity washes; keep price text neutral and readable.
     auto wash = [](ImU32 color, unsigned alpha) { return (color & 0x00ffffffu) | (alpha << 24); };
     const ImU32 itm_background = wash(ribbon_color(4), 30);
@@ -168,7 +196,21 @@ static void options_window(State &s) {
                                                                   : in ? itm_background
                                                                        : otm_background);
             ImGui::TableSetColumnIndex(0);
-            value(r.strike);
+            bool pinned = target && target->option_marker && target->option_marker->expiry == r.expiry &&
+                          target->option_marker->strike == r.strike && target->option_marker->puts == o.puts;
+            char strike_label[80];
+            std::snprintf(strike_label, sizeof(strike_label), "%s%.2f", pinned ? "* " : "", r.strike);
+            if (ImGui::Selectable(strike_label, false, ImGuiSelectableFlags_SpanAllColumns)) {
+                if (target)
+                    target->option_marker = OptionMarker{r.expiry, r.strike, o.puts};
+            }
+            if (ImGui::IsItemHovered()) {
+                if (target)
+                    s.option_preview = OptionPreview{target->id, {r.expiry, r.strike, o.puts}};
+                ImGui::SetTooltip(target
+                                      ? "Hover previews on the linked chart. Click to pin strike and expiry."
+                                      : "Open a chart of this underlying to preview or pin this option.");
+            }
             if (at && o.centered_key != o.key) {
                 ImGui::SetScrollHereY(.5f);
                 o.centered_key = o.key;
@@ -317,10 +359,13 @@ static void screener_window(State &s) {
                     s.options.open = s.options.focus = true;
                     s.refresh_options();
                 }
-                if (ImGui::MenuItem("Add to current list")) {
-                    auto &symbols = s.lists[size_t(s.selected_list)].symbols;
-                    if (std::find(symbols.begin(), symbols.end(), r.symbol) == symbols.end())
-                        symbols.push_back(r.symbol);
+                if (ImGui::BeginMenu("Add to watchlist")) {
+                    for (auto &list : s.lists)
+                        if (ImGui::MenuItem(list.name.c_str()) &&
+                            std::find(list.symbols.begin(), list.symbols.end(), r.symbol) ==
+                                list.symbols.end())
+                            list.symbols.push_back(r.symbol);
+                    ImGui::EndMenu();
                 }
                 ImGui::EndPopup();
             }
@@ -346,7 +391,113 @@ static void screener_window(State &s) {
     }
     ImGui::End();
 }
+static void fundamentals_window(State &s) {
+    auto &w = s.fundamentals;
+    if (!w.open)
+        return;
+    if (w.follow)
+        w.symbol = s.current().symbol;
+    ImGui::SetNextWindowSize({530, 640}, ImGuiCond_FirstUseEver);
+    if (w.focus) {
+        ImGui::SetNextWindowFocus();
+        w.focus = false;
+    }
+    if (!ImGui::Begin("Fundamentals", &w.open)) {
+        ImGui::End();
+        return;
+    }
+    ImGui::Checkbox("Follow selected chart", &w.follow);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120);
+    if (ImGui::InputTextWithHint("##company", w.symbol.c_str(), w.input, sizeof(w.input),
+                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+        try {
+            w.symbol = normalize_symbol(w.input);
+            w.follow = false;
+            w.input[0] = 0;
+        } catch (const std::exception &e) {
+            s.notice = e.what();
+        }
+    }
+    auto &c = s.company(w.symbol);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(c.loading || s.offline);
+    if (ImGui::Button("Refresh"))
+        s.company(w.symbol, true);
+    ImGui::EndDisabled();
+    auto &f = c.data;
+    ImGui::Separator();
+    ImGui::TextWrapped("%s  %s", w.symbol.c_str(), f.name.c_str());
+    if (!f.sector.empty())
+        ImGui::TextWrapped("%s / %s", f.sector.c_str(), f.industry.c_str());
+    status(s.offline, c.loading, f.fetched, "");
+    if (!c.error.empty())
+        ImGui::TextWrapped("Unavailable updates: %s. Previously cached components are retained.",
+                           c.error.c_str());
+    if (!c.part_times.empty() && ImGui::CollapsingHeader("Data timestamps"))
+        for (auto &[name, time] : c.part_times.items())
+            ImGui::Text("%s: %s", name.c_str(), local_date(time.get<Time>()).c_str());
+    if (ImGui::BeginTable("facts", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        for (auto &[name, value] : f.facts) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(value.c_str());
+        }
+        double ttm = missing;
+        for (size_t i = 0; i < f.earnings.size(); ++i)
+            if (!f.earnings[i].upcoming)
+                ttm = trailing_eps(f.earnings, i);
+        if (std::isfinite(ttm)) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("EPS / trailing 4 quarters");
+            ImGui::TableNextColumn();
+            value(ttm);
+        }
+        ImGui::EndTable();
+    }
+    if (!f.description.empty() && ImGui::CollapsingHeader("About this company"))
+        ImGui::TextWrapped("%s", f.description.c_str());
+    ImGui::SeparatorText("Earnings / EPS");
+    auto &p = s.current();
+    ImGui::BeginDisabled(p.symbol != w.symbol);
+    p.dirty |= ImGui::Checkbox("EPS line on selected chart", &p.eps);
+    if (p.eps)
+        p.dirty |= ImGui::Checkbox("Trailing four quarters", &p.eps_ttm);
+    ImGui::EndDisabled();
+    if (f.earnings.empty())
+        ImGui::TextWrapped("No earnings reports available for this symbol.");
+    if (ImGui::BeginTable("reports", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH)) {
+        for (auto name : {"Report date", "Quarter", "Actual", "Estimate", "Surprise %"})
+            ImGui::TableSetupColumn(name);
+        ImGui::TableHeadersRow();
+        for (auto it = f.earnings.rbegin(); it != f.earnings.rend(); ++it) {
+            auto &e = *it;
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%s%s", e.day.c_str(), e.upcoming ? "*" : "");
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(e.upcoming ? "Upcoming" : e.fiscal.c_str());
+            ImGui::TableNextColumn();
+            value(e.actual);
+            ImGui::TableNextColumn();
+            value(e.estimate);
+            ImGui::TableNextColumn();
+            value(e.surprise);
+        }
+        ImGui::EndTable();
+    }
+    if (!f.upcoming_note.empty() && ImGui::CollapsingHeader("Upcoming report / estimated date"))
+        ImGui::TextWrapped("%s", f.upcoming_note.c_str());
+    ImGui::TextWrapped("Nasdaq / recent quarters plus locally cached reports. * Upcoming dates are "
+                       "estimates. Report times are unavailable; the EPS line changes from the following "
+                       "day. EPS uses the provider's reported basis, which may differ from GAAP.");
+    ImGui::End();
+}
 void market_windows(State &s) {
+    fundamentals_window(s);
     options_window(s);
     screener_window(s);
 }

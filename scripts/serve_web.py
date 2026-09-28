@@ -56,9 +56,18 @@ def upstream(path, method='GET', body=None):
         if any(not query.get(k, '').isdigit() for k in ('period1', 'period2')):
             raise ValueError('Invalid period')
         clean = {k: query[k] for k in ('interval', 'period1', 'period2')}
-        clean['includePrePost'] = 'false'
+        extended = query.get('includePrePost', 'false')
+        if extended not in ('true', 'false'):
+            raise ValueError('Invalid extended-hours flag')
+        clean['includePrePost'] = extended if query['interval'] == '1m' else 'false'
         return 'https://query1.finance.yahoo.com/v8/finance/chart/' + urllib.parse.quote(symbol, safe='') + '?' + urllib.parse.urlencode(clean), headers, None
-    match = re.fullmatch(r'/nasdaq/api/quote/([A-Z-]{1,10})/(info|chart|option-chain)', route)
+    company = re.fullmatch(r'/nasdaq/api/(company/([A-Z-]{1,10})/(company-profile|earnings-surprise)|analyst/([A-Z-]{1,10})/earnings-date)', route)
+    if company:
+        if query:
+            raise ValueError('Unexpected fundamentals parameter')
+        headers.update({'Origin': 'https://www.nasdaq.com', 'Referer': 'https://www.nasdaq.com/'})
+        return 'https://api.nasdaq.com' + route.removeprefix('/nasdaq'), headers, None
+    match = re.fullmatch(r'/nasdaq/api/quote/([A-Z-]{1,10})/(info|chart|option-chain|summary)', route)
     if match:
         if query.get('assetclass') not in ('stocks', 'etf'):
             raise ValueError('Invalid asset class')

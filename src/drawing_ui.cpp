@@ -242,7 +242,7 @@ void drawing_toolbar(State &s, Panel &p) {
         s.drawing_tools_focus = true;
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Open the detachable drawing tools window. Shift-drag to measure.");
+        ImGui::SetTooltip("Open the drawing tools panel. Shift-drag to measure.");
     drawing_settings(s, p);
 }
 void drawing_tools_window(State &s) {

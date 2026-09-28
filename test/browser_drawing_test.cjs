@@ -28,10 +28,10 @@ const artifact = name => require('node:path').join(require('node:os').tmpdir(), 
     await settle();
     assert((await state()).charts[0].view.first < panned.charts[0].view.first);
     const unchanged = (await state()).charts[0].view;
-    await page.mouse.click(482, 76); // Open the persistent drawing tools window.
+    await page.mouse.click(482, 102); // Open the persistent drawing tools window.
     await page.waitForTimeout(200);
     await page.screenshot({path: artifact('chartroom-draw-menu.png')});
-    await page.mouse.click(1140, 230); // Trend line in the floating tool window.
+    await page.mouse.click(1140, 256); // Trend line in the floating tool window.
     await page.mouse.move(600, 340);
     await page.mouse.down();
     await page.mouse.move(1000, 480, {steps: 8});
@@ -76,9 +76,9 @@ const artifact = name => require('node:path').join(require('node:os').tmpdir(), 
     await page.screenshot({path: process.env.CHARTROOM_SCREENSHOT || artifact('chartroom-measurement.png')});
     await page.keyboard.press('Escape');
     // Place and edit a text note through the actual popup controls.
-    await page.mouse.click(482, 76);
+    await page.mouse.click(482, 102);
     await page.waitForTimeout(150);
-    await page.mouse.click(1140, 299); // Text note in the floating tool window.
+    await page.mouse.click(1140, 325); // Text note in the floating tool window.
     await page.waitForTimeout(200);
     await page.mouse.click(600, 250);
     await page.waitForTimeout(200);
@@ -96,7 +96,7 @@ const artifact = name => require('node:path').join(require('node:os').tmpdir(), 
     assert.equal(notes[1].kind, 'text');
     assert.equal(notes[1].text, 'Support zone');
     // Two-click Fibonacci placement leaves the first click as a preview only.
-    await page.mouse.click(1140, 345);
+    await page.mouse.click(1140, 371);
     await page.mouse.click(620, 550);
     await settle();
     assert.equal((await state()).drawings.SPY.length, 2);
@@ -111,7 +111,7 @@ const artifact = name => require('node:path').join(require('node:os').tmpdir(), 
     assert.equal((await state()).charts[0].view.first, unchanged.first);
     await page.screenshot({path: artifact('chartroom-fibonacci.png')});
     // Edit the Fibonacci-specific controls through the palette's settings action.
-    await page.mouse.click(1140, 440);
+    await page.mouse.click(1140, 466);
     await page.waitForTimeout(200);
     await page.mouse.click(710, 429); // Reverse.
     await page.mouse.click(811, 461); // Extend right.
@@ -132,8 +132,8 @@ const artifact = name => require('node:path').join(require('node:os').tmpdir(), 
     assert.equal(notes[2].fib.background, false);
     assert.equal(notes[2].fib.levels[1].ratio, .25);
     // Move the palette, then allow ImGui's layout-save timer to persist its position.
-    await page.mouse.move(1220, 121); await page.mouse.down();
-    await page.mouse.move(1120, 201, {steps: 8}); await page.mouse.up();
+    await page.mouse.move(1220, 147); await page.mouse.down();
+    await page.mouse.move(1120, 227, {steps: 8}); await page.mouse.up();
     await page.mouse.move(700, 700);
     await page.waitForTimeout(6500);
     const paletteState = await state();

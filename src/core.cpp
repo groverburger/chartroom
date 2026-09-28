@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdio>
 #include <ctime>
+#include <deque>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -51,6 +52,35 @@ std::string date(Time t, const char *format) {
     auto tm = utc(t);
     std::strftime(b, sizeof(b), format, &tm);
     return b;
+}
+static std::tm local_tm(Time t) {
+    std::tm out{};
+    std::time_t value = t;
+#ifdef _WIN32
+    localtime_s(&out, &value);
+#else
+    localtime_r(&value, &out);
+#endif
+    return out;
+}
+std::string local_date(Time t, const char *format) {
+    char b[128]{};
+    auto tm = local_tm(t);
+    std::strftime(b, sizeof(b), format, &tm);
+    return b;
+}
+Time local_wall(Time t) {
+    auto tm = local_tm(t);
+#ifdef _WIN32
+    return _mkgmtime(&tm);
+#else
+    return timegm(&tm);
+#endif
+}
+Time local_instant(Time wall) {
+    auto tm = utc(wall);
+    tm.tm_isdst = -1;
+    return std::mktime(&tm);
 }
 std::string normalize_symbol(std::string s) {
     auto a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
@@ -499,13 +529,23 @@ static std::optional<Quote> metadata_quote(const Json &meta, Time fetched) {
     double price = number(meta.value("regularMarketPrice", Json())),
            prior = number(meta.value("previousClose", Json())),
            time = number(meta.value("regularMarketTime", Json()));
-    if (!std::isfinite(price) || !std::isfinite(prior) || prior == 0 || !std::isfinite(time) || time <= 0 ||
-        time > 1e12 || (meta.value("symbol", std::string{}) == "^VIX" && (price <= 0 || prior <= 0)))
+    double change = number(meta.value("regularMarketChangePercent", Json()));
+    if (!std::isfinite(price) || !std::isfinite(time) || time <= 0 || time > 1e12 ||
+        (meta.value("symbol", std::string{}) == "^VIX" && price <= 0))
         return {};
-    double change = (price / prior - 1) * 100;
+    if (!std::isfinite(change)) {
+        if (!std::isfinite(prior) || prior == 0 ||
+            (meta.value("symbol", std::string{}) == "^VIX" && prior <= 0))
+            return {};
+        change = (price / prior - 1) * 100;
+    }
     if (!std::isfinite(change))
         return {};
     return Quote{price, change, Time(time), fetched, true};
+}
+bool fresh_extended(const Quote &q, Time clock) {
+    return q.extended && q.extended->asof > q.asof && clock - q.extended->fetched < 600 &&
+           clock - q.extended->asof < 1800 && q.extended->asof <= clock + 60;
 }
 Quote parse_quote(const std::string &body, const std::string &symbol) {
     auto root = Json::parse(body);
@@ -516,8 +556,35 @@ Quote parse_quote(const std::string &body, const std::string &symbol) {
     auto &meta = chart.at("result").at(0).at("meta");
     if (meta.value("symbol", std::string{}) != symbol)
         throw std::runtime_error("Mismatched quote symbol");
-    if (auto q = metadata_quote(meta, now()))
+    if (auto q = metadata_quote(meta, now())) {
+        const auto &result = chart.at("result").at(0);
+        // Only the quote request includes extended minutes; chart history remains regular-only.
+        // A timestamp and explicit provider session bounds are required for a live marker.
+        try {
+            const auto &periods = meta.at("currentTradingPeriod");
+            const auto &ts = result.at("timestamp");
+            const auto &closes = result.at("indicators").at("quote").at(0).at("close");
+            if (meta.value("hasPrePostMarketData", false) && ts.is_array() && closes.is_array())
+                for (size_t i = std::min(ts.size(), closes.size()); i-- > 0;) {
+                    double price = number(closes[i]), timestamp = number(ts[i]);
+                    if (!(price > 0) || !std::isfinite(timestamp) || timestamp <= q->asof ||
+                        timestamp > q->fetched + 60)
+                        continue;
+                    for (auto session : {"pre", "post"}) {
+                        const auto &period = periods.at(session);
+                        if (timestamp >= period.at("start").get<Time>() &&
+                            timestamp < period.at("end").get<Time>())
+                            q->extended = ExtendedQuote{price, Time(timestamp), q->fetched,
+                                                        std::string(session) == "pre" ? "Pre" : "Post"};
+                    }
+                    if (q->extended)
+                        break;
+                }
+        } catch (...) {
+            // Regular-session prices remain usable when optional extended data is absent.
+        }
         return *q;
+    }
     throw std::runtime_error("Current price or previous session close unavailable");
 }
 std::optional<Quote> quote(const History &h) {
@@ -550,14 +617,16 @@ std::optional<Quote> quote(const History &h) {
                  false, h.meta.value("chartroomSource", std::string("Yahoo"))};
 }
 void View::fit(size_t n) {
-    count = double(std::min<size_t>(default_count, std::max<size_t>(1, n)));
-    first = std::max(0., double(n) - count);
+    // Retain the usual amount of history and add room for future dates.
+    count = double(std::min<size_t>(default_count, std::max<size_t>(1, n))) / latest_position;
+    first = n ? double(n) - .5 - count * latest_position : 0;
 }
 void View::zoom(size_t n, double wheel, double anchor) {
     anchor = std::clamp(anchor, 0., 1.);
     double world = first + anchor * count;
     count = std::clamp(count * std::exp(-std::clamp(wheel, -10., 10.) * .16),
-                       double(std::min<size_t>(15, std::max<size_t>(1, n))), double(std::max<size_t>(1, n)));
+                       double(std::min<size_t>(15, std::max<size_t>(1, n))),
+                       double(std::max<size_t>(1, n)) / latest_position);
     first = world - anchor * count;
 }
 std::pair<int, int> View::visible(size_t n) const {
@@ -585,11 +654,17 @@ std::vector<Bar> aggregate(const std::vector<Bar> &bars, int hours) {
 std::vector<double> mean(const std::vector<double> &a, int p) {
     std::vector<double> out(a.size(), missing);
     double sum = 0;
+    int finite = 0;
     for (size_t i = 0; i < a.size(); ++i) {
-        sum += a[i];
-        if (i >= size_t(p))
+        if (std::isfinite(a[i])) {
+            sum += a[i];
+            ++finite;
+        }
+        if (i >= size_t(p) && std::isfinite(a[i - p])) {
             sum -= a[i - p];
-        if (i + 1 >= size_t(p))
+            --finite;
+        }
+        if (finite == p)
             out[i] = sum / p;
     }
     return out;
@@ -612,17 +687,25 @@ Indicator indicator(const std::string &k) {
     Indicator s;
     s.kind = k;
     s.color = k == "SMA" ? gold : blue;
-    s.period = (k == "RSI" || k == "ATR") ? 14 : k == "MACD" ? 12 : 20;
+    s.period = (k == "RSI" || k == "ATR" || k == "STOCH") ? 14 : (k == "MACD" || k == "ROC") ? 12 : 20;
+    if (k == "PIVOTS") {
+        s.period = 5;
+        s.color = rgba(200, 128, 200);
+    }
+    if (k == "STOCH")
+        s.slow = s.signal = 3;
+    if (k == "KC")
+        s.slow = 10;
     return s;
 }
 Indicator next_indicator(const std::string &kind, const std::vector<Indicator> &existing) {
     auto spec = indicator(kind);
-    if (kind != "SMA" && kind != "EMA")
+    if (kind != "SMA" && kind != "EMA" && kind != "VWMA")
         return spec;
     size_t count = 0;
     uint32_t last = 0;
     for (const auto &old : existing)
-        if (old.kind == "SMA" || old.kind == "EMA") {
+        if (old.kind == "SMA" || old.kind == "EMA" || old.kind == "VWMA") {
             ++count;
             last = old.color;
         }
@@ -657,6 +740,11 @@ Json encode_indicator(const Indicator &s) {
         colors.push_back(encode_color(c));
     return {{"kind", s.kind},
             {"background", s.background},
+            {"exclude_current", s.exclude_current},
+            {"midline", s.midline},
+            {"show_highs", s.show_highs},
+            {"show_lows", s.show_lows},
+            {"low_color", encode_color(s.low_color)},
             {"color", encode_color(s.color)},
             {"ma_colors", colors},
             {"enabled", s.enabled},
@@ -677,12 +765,18 @@ Indicator decode_indicator(const Json &j) {
         throw std::runtime_error("Unknown indicator");
     s.enabled = j.value("enabled", true);
     s.period = std::clamp(j.value("period", s.period), 1, 500);
-    s.slow = std::clamp(j.value("slow", 26), 1, 500);
-    s.signal = std::clamp(j.value("signal", 9), 1, 500);
+    s.slow = std::clamp(j.value("slow", s.slow), 1, 500);
+    s.signal = std::clamp(j.value("signal", s.signal), 1, 500);
     s.deviation = std::clamp(j.value("deviation", 2.), .1, 10.);
     s.colored_bars = j.value("colored_bars", true);
     s.show_emas = j.value("show_emas", true);
     s.background = j.value("background", true);
+    s.exclude_current = j.value("exclude_current", false);
+    s.midline = j.value("midline", true);
+    s.show_highs = j.value("show_highs", true);
+    s.show_lows = j.value("show_lows", true);
+    if (j.contains("low_color"))
+        s.low_color = decode_color(j["low_color"]);
     if (j.contains("color"))
         s.color = decode_color(j["color"]);
     if (j.contains("ma_colors")) {
@@ -765,11 +859,45 @@ static std::vector<double> align(const std::vector<Bar> &bars, int tf, const His
     }
     return out;
 }
+// Monotonic queues keep rolling extrema linear in the number of bars.
+static std::pair<std::vector<double>, std::vector<double>> extremes(const std::vector<Bar> &bars,
+                                                                    int period) {
+    std::vector<double> high(bars.size(), missing), low(bars.size(), missing);
+    std::deque<size_t> highs, lows;
+    for (size_t i = 0; i < bars.size(); ++i) {
+        while (!highs.empty() && highs.front() + size_t(period) <= i)
+            highs.pop_front();
+        while (!lows.empty() && lows.front() + size_t(period) <= i)
+            lows.pop_front();
+        while (!highs.empty() && bars[highs.back()].high <= bars[i].high)
+            highs.pop_back();
+        while (!lows.empty() && bars[lows.back()].low >= bars[i].low)
+            lows.pop_back();
+        highs.push_back(i);
+        lows.push_back(i);
+        if (i + 1 >= size_t(period)) {
+            high[i] = bars[highs.front()].high;
+            low[i] = bars[lows.front()].low;
+        }
+    }
+    return {high, low};
+}
+static std::vector<double> true_ranges(const std::vector<Bar> &bars) {
+    std::vector<double> tr;
+    for (size_t i = 0; i < bars.size(); ++i) {
+        auto &b = bars[i];
+        tr.push_back(i == 0 ? b.high - b.low
+                            : std::max({b.high - b.low, std::abs(b.high - bars[i - 1].close),
+                                        std::abs(b.low - bars[i - 1].close)}));
+    }
+    return tr;
+}
 Result calculate(const Indicator &s, const std::vector<Bar> &bars, int tf, const History *chart,
                  const History *source, Time clock) {
     Result r;
     r.name = s.kind == "RIBBON" ? "MA ribbon" : s.kind + " " + std::to_string(s.period);
-    r.pane = s.kind == "RSI" || s.kind == "MACD" || s.kind == "ATR";
+    r.pane = s.kind == "RSI" || s.kind == "MACD" || s.kind == "ATR" || s.kind == "STOCH" || s.kind == "ROC" ||
+             s.kind == "OBV";
     r.colored_bars = s.kind == "RIBBON" && s.colored_bars;
     r.background = s.background;
     std::vector<double> prices;
@@ -779,6 +907,108 @@ Result calculate(const Indicator &s, const std::vector<Bar> &bars, int tf, const
     if (s.kind == "SMA" || s.kind == "EMA") {
         r.lines.push_back(s.kind == "SMA" ? mean(prices, p) : ema(prices, p));
         r.colors.push_back(s.color);
+    } else if (s.kind == "PIVOTS") {
+        r.name = "Swing pivots " + std::to_string(p) + " + " + std::to_string(p);
+        r.pivots = true;
+        r.lines.assign(2, std::vector<double>(bars.size(), missing));
+        r.colors = {s.color, s.low_color};
+        auto calendar = chart ? sessions(chart->meta) : std::map<Time, Time>{};
+        if (chart && chart->meta.contains("currentTradingPeriod"))
+            collect_sessions(chart->meta["currentTradingPeriod"].value("regular", Json::object()), calendar);
+        // Weekly session calendars can be partial (e.g. only Monday), so require the
+        // full interval or the next weekly bar before confirming that week's close.
+        auto ends = bar_ends(bars, tf, tf == 3 ? std::map<Time, Time>{} : calendar);
+        Time observed = chart && chart->fetched > 0 ? std::min(clock, chart->fetched) : clock;
+        for (size_t i = size_t(p); i + size_t(p) < bars.size(); ++i) {
+            const size_t right = i + size_t(p);
+            bool next_started = right + 1 < bars.size() && bars[right + 1].time <= observed;
+            if (!next_started && ends[right] > observed)
+                continue;
+            bool high = s.show_highs, low = s.show_lows;
+            for (size_t j = i - p; j <= right && (high || low); ++j) {
+                if (j == i)
+                    continue;
+                // Strict extrema: equal highs/lows do not create duplicate plateau markers.
+                high &= bars[i].high > bars[j].high;
+                low &= bars[i].low < bars[j].low;
+            }
+            if (high)
+                r.lines[0][i] = bars[i].high;
+            if (low)
+                r.lines[1][i] = bars[i].low;
+        }
+    } else if (s.kind == "DONCHIAN") {
+        auto [high, low] = extremes(bars, p);
+        if (s.exclude_current) {
+            for (size_t i = bars.size(); i-- > 0;) {
+                high[i] = i ? high[i - 1] : missing;
+                low[i] = i ? low[i - 1] : missing;
+            }
+        }
+        r.lines = {high, low};
+        r.colors = {s.color, s.color};
+        if (s.midline) {
+            auto mid = high;
+            for (size_t i = 0; i < mid.size(); ++i)
+                mid[i] = (high[i] + low[i]) / 2;
+            r.lines.push_back(std::move(mid));
+            r.colors.push_back(gold);
+        }
+        if (s.exclude_current)
+            r.name += " / prior bars";
+    } else if (s.kind == "KC") {
+        auto mid = ema(prices, p), high = mid, low = mid;
+        auto atr = ema(true_ranges(bars), s.slow, true);
+        for (size_t i = 0; i < bars.size(); ++i) {
+            high[i] += s.deviation * atr[i];
+            low[i] -= s.deviation * atr[i];
+        }
+        r.lines = {mid, high, low};
+        r.colors = {gold, s.color, s.color};
+    } else if (s.kind == "STOCH") {
+        auto [high, low] = extremes(bars, p);
+        auto k = high;
+        for (size_t i = size_t(p - 1); i < bars.size(); ++i)
+            k[i] = high[i] == low[i] ? 50 : 100 * (prices[i] - low[i]) / (high[i] - low[i]);
+        k = mean(k, s.slow);
+        r.lines = {k, mean(k, s.signal)};
+        r.colors = {s.color, gold};
+    } else if (s.kind == "ROC") {
+        std::vector<double> values(prices.size(), missing);
+        for (size_t i = size_t(p); i < prices.size(); ++i)
+            if (prices[i - p] != 0)
+                values[i] = (prices[i] / prices[i - p] - 1) * 100;
+        r.lines = {values};
+        r.colors = {s.color};
+        r.name += " (%)";
+    } else if (s.kind == "VWMA") {
+        std::vector<double> pv, volume;
+        for (auto &b : bars) {
+            bool valid = std::isfinite(b.volume) && b.volume >= 0;
+            volume.push_back(valid ? b.volume : missing);
+            pv.push_back(valid ? b.close * b.volume : missing);
+        }
+        auto weights = mean(volume, p), values = mean(pv, p);
+        for (size_t i = 0; i < values.size(); ++i)
+            values[i] = weights[i] > 0 ? values[i] / weights[i] : missing;
+        r.lines = {values};
+        r.colors = {s.color};
+    } else if (s.kind == "OBV") {
+        std::vector<double> values(bars.size(), missing);
+        double total = 0;
+        bool valid = true;
+        for (size_t i = 0; i < bars.size(); ++i) {
+            valid &= std::isfinite(bars[i].volume) && bars[i].volume >= 0;
+            if (i && valid)
+                total += prices[i] > prices[i - 1]   ? bars[i].volume
+                         : prices[i] < prices[i - 1] ? -bars[i].volume
+                                                     : 0;
+            if (valid)
+                values[i] = total;
+        }
+        r.lines = {values};
+        r.colors = {s.color};
+        r.name = valid ? "OBV" : "OBV / volume gaps unavailable";
     } else if (s.kind == "BB") {
         auto m = mean(prices, p), hi = m, lo = m;
         for (size_t i = size_t(p - 1); i < prices.size(); ++i) {
@@ -819,14 +1049,7 @@ Result calculate(const Indicator &s, const std::vector<Bar> &bars, int tf, const
         r.colors = {blue, gold};
         r.name = "MACD " + std::to_string(p) + "/" + std::to_string(s.slow) + "/" + std::to_string(s.signal);
     } else if (s.kind == "ATR") {
-        std::vector<double> tr;
-        for (size_t i = 0; i < bars.size(); ++i) {
-            auto b = bars[i];
-            tr.push_back(i == 0 ? b.high - b.low
-                                : std::max({b.high - b.low, std::abs(b.high - bars[i - 1].close),
-                                            std::abs(b.low - bars[i - 1].close)}));
-        }
-        r.lines = {ema(tr, p, true)};
+        r.lines = {ema(true_ranges(bars), p, true)};
         r.colors = {gold};
     } else if (s.kind == "RIBBON") {
         bool custom = s.timeframe > 0 && s.timeframe - 1 != tf;
@@ -988,7 +1211,8 @@ Json encode_view(const View &v, const std::vector<Bar> &bars) {
             {"count", v.count},
             {"length", bars.size()},
             {"anchor", bars.empty() ? Json() : Json(anchor)},
-            {"follow", !bars.empty() && std::abs(v.first + v.count - double(bars.size())) < .01}};
+            {"follow", !bars.empty() && std::abs(v.first + v.count * View::latest_position -
+                                                 (double(bars.size()) - .5)) < .01}};
 }
 void restore_view(View &v, const std::vector<Bar> &bars, const Json &d, bool julia) {
     double first = d.at("first").get<double>() - (julia ? 1 : 0), count = d.at("count");
@@ -997,7 +1221,7 @@ void restore_view(View &v, const std::vector<Bar> &bars, const Json &d, bool jul
     double old = d.value("length", 0.);
     v.count = std::min(count, 1e8);
     if (d.value("follow", false))
-        v.first = double(bars.size()) - count;
+        v.first = double(bars.size()) - .5 - v.count * View::latest_position;
     else if (first >= old && old > 0)
         v.first = double(bars.size()) + first - old;
     else if (first >= 0 && !d.value("anchor", Json()).is_null() && !bars.empty()) {

@@ -14,6 +14,21 @@ History binance_history(const std::string &, const std::string &symbol, const st
 Quote binance_quote(const std::string &);
 History append_session(History, const History &); // Latest daily OHLC, one candle per session.
 
+struct EarningsEvent {
+    std::string day, fiscal;
+    double actual = missing, estimate = missing, surprise = missing;
+    bool upcoming = false;
+};
+struct Fundamentals {
+    std::string symbol, name, description, sector, industry, upcoming_note;
+    std::vector<std::pair<std::string, std::string>> facts;
+    std::vector<EarningsEvent> earnings;
+    Time fetched = 0;
+};
+Fundamentals parse_fundamentals(const Json &parts, const std::string &symbol);
+Result eps_series(const Fundamentals &, const std::vector<Bar> &, bool trailing);
+double trailing_eps(const std::vector<EarningsEvent> &, size_t end);
+
 struct OptionSide {
     double last = missing, bid = missing, ask = missing, volume = missing, interest = missing;
     bool itm = false;

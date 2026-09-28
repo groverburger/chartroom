@@ -50,7 +50,7 @@ const assert = require('node:assert/strict');
     assert(Math.abs((await quote('SPY')).change-10)<1e-8);
     // A fresh chart snapshot must win over a slower, older sidebar response.
     phase=2;chartQuote=true;hold=true;
-    await page.mouse.click(425,76); // Refresh current chart.
+    await page.mouse.click(425,102); // Refresh current chart.
     await waitQuote('SPY',115);
     assert(held,'Chart refresh also requested a sidebar snapshot');
     hold=false;

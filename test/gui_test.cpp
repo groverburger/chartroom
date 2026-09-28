@@ -330,23 +330,26 @@ int main() {
                   });
         }
         CHECK(width > 300);
-        // The tool palette can own a real native window outside the main viewport.
+        // Floating panels stay in the main OS window, including old detached layouts.
         frame([] {}, [] { ImGui::ClosePopupsOverWindow(nullptr, true); });
-        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
+        CHECK(!(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable));
         state.drawing_tools_open = true;
         frame();
         auto *tools = ImGui::FindWindowByName("Drawing tools");
         CHECK(tools);
-        ImGui::SetWindowPos(tools, {ImGui::GetMainViewport()->Pos.x + 1500, 100});
-        for (int i = 0; i < 4; ++i) {
+        ImGui::LoadIniSettingsFromMemory(
+            "[Window][Drawing tools]\nViewportPos=3000,2000\nViewportId=0x12345678\n"
+            "Pos=0,0\nSize=320,560\nCollapsed=0\n\n");
+        for (int i = 0; i < 4; ++i)
             frame();
-            ImGui::UpdatePlatformWindows();
-            ImGui::RenderPlatformWindowsDefault();
-            glfwMakeContextCurrent(window);
-        }
-        CHECK(tools->Viewport != ImGui::GetMainViewport());
-        CHECK(tools->Viewport->PlatformHandle && tools->Viewport->PlatformWindowCreated);
-        CHECK(ImGui::GetPlatformIO().Viewports.Size >= 2);
+        CHECK(tools->Viewport == ImGui::GetMainViewport());
+        CHECK(!tools->ViewportOwned);
+        CHECK(ImGui::GetPlatformIO().Viewports.Size == 1);
+        auto *main_viewport = ImGui::GetMainViewport();
+        CHECK(tools->Pos.x < main_viewport->Pos.x + main_viewport->Size.x);
+        CHECK(tools->Pos.y < main_viewport->Pos.y + main_viewport->Size.y);
+        CHECK(tools->Pos.x + tools->Size.x > main_viewport->Pos.x);
+        CHECK(tools->Pos.y + tools->TitleBarHeight > main_viewport->Pos.y);
         state.ini = ImGui::SaveIniSettingsToMemory();
         state.save(true);
         {

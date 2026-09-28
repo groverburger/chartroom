@@ -65,6 +65,8 @@ static Time et_offset(Time local) {
 Time eastern_time(const std::string &s) {
     std::tm t{};
     std::istringstream in(s);
+    if (s.starts_with("Closed at "))
+        in.ignore(10);
     in >> std::get_time(&t, "%b %d, %Y %I:%M %p");
     if (in.fail() || !s.ends_with(" ET"))
         throw std::runtime_error("Nasdaq: missing trade timestamp");
@@ -77,12 +79,29 @@ Quote nasdaq_quote(const std::string &body, const std::string &symbol) {
     auto d = nasdaq_data(body);
     if (d.value("symbol", "") != symbol)
         throw std::runtime_error("Nasdaq: mismatched symbol");
-    auto p = d.at("primaryData");
+    auto status = d.value("marketStatus", std::string{});
+    std::string session = status == "Pre-Market"                                 ? "Pre"
+                          : (status == "After-Hours" || status == "Post-Market") ? "Post"
+                                                                                 : "";
+    auto p = session.empty() ? d.at("primaryData") : d.at("secondaryData");
+    if (!p.is_object())
+        throw std::runtime_error("Nasdaq: regular-session quote unavailable");
     Quote q{field(p, "lastSalePrice"), field(p, "percentageChange"), eastern_time(p.at("lastTradeTimestamp")),
             now(), true};
     if (!(q.price > 0) || !std::isfinite(q.change))
         throw std::runtime_error("Nasdaq: incomplete quote");
     q.source = "Nasdaq";
+    if (!session.empty()) {
+        // A missing extended quote must not discard a valid regular-session close.
+        try {
+            const auto &live = d.at("primaryData");
+            double price = field(live, "lastSalePrice");
+            Time t = eastern_time(live.at("lastTradeTimestamp"));
+            if (std::isfinite(price) && price > 0 && t > q.asof)
+                q.extended = ExtendedQuote{price, t, q.fetched, session, "Nasdaq"};
+        } catch (...) {
+        }
+    }
     return q;
 }
 History nasdaq_history(const std::string &body, const std::string &symbol) {
@@ -364,5 +383,125 @@ ScreenResult parse_screen(const std::string &body) {
             {normalize_symbol(symbol), str(0), str(4), str(6), num(v[1]), num(v[2]), num(v[3]), num(v[5])});
     }
     return out;
+}
+static std::string string_value(const Json &j) {
+    return j.is_string() ? j.get<std::string>() : std::string{};
+}
+static std::string fundamental_field(const Json &j, const char *key) {
+    auto it = j.find(key);
+    return it != j.end() && it->is_object() ? string_value(it->value("value", Json{})) : "";
+}
+static std::string report_date(const std::string &value) {
+    std::smatch m;
+    if (!std::regex_search(value, m, std::regex(R"((\d{1,2})/(\d{1,2})/(\d{4}))")))
+        return "";
+    char b[20];
+    std::snprintf(b, sizeof(b), "%04d-%02d-%02d", std::stoi(m[3]), std::stoi(m[1]), std::stoi(m[2]));
+    return valid_expiry(b) ? b : "";
+}
+Fundamentals parse_fundamentals(const Json &parts, const std::string &symbol) {
+    Fundamentals out;
+    out.symbol = symbol;
+    auto data = [&](const char *name) {
+        auto it = parts.find(name);
+        if (it == parts.end() || !it->is_object())
+            return Json::object();
+        auto d = it->value("data", Json::object());
+        if (!d.is_object())
+            return Json::object();
+        if (d.contains("symbol") && normalize_symbol(d["symbol"]) != symbol)
+            throw std::runtime_error("Fundamentals: mismatched symbol");
+        return d;
+    };
+    auto profile = data("profile"), summary = data("summary").value("summaryData", Json::object());
+    auto identity = fundamental_field(profile, "Symbol");
+    if (!identity.empty() && normalize_symbol(identity) != symbol)
+        throw std::runtime_error("Fundamentals: mismatched profile symbol");
+    out.name = fundamental_field(profile, "CompanyName");
+    out.description = fundamental_field(profile, "CompanyDescription");
+    out.sector = fundamental_field(profile, "Sector");
+    out.industry = fundamental_field(profile, "Industry");
+    if (out.sector.empty())
+        out.sector = fundamental_field(summary, "Sector");
+    if (out.industry.empty())
+        out.industry = fundamental_field(summary, "Industry");
+    for (auto key : {"Exchange", "MarketCap", "FiftTwoWeekHighLow", "AverageVolume", "OneYrTarget",
+                     "AnnualizedDividend", "Yield", "ExDividendDate", "DividendPaymentDate"}) {
+        auto value = fundamental_field(summary, key);
+        if (!value.empty() && value != "N/A")
+            out.facts.emplace_back(string_value(summary[key].value("label", Json{})), value);
+    }
+    auto table = data("earnings").value("earningsSurpriseTable", Json::object());
+    if (table.is_object())
+        for (auto &row : table.value("rows", Json::array())) {
+            EarningsEvent e;
+            e.day = report_date(string_value(row.value("dateReported", Json{})));
+            if (e.day.empty())
+                continue;
+            e.fiscal = string_value(row.value("fiscalQtrEnd", Json{}));
+            e.actual = field(row, "eps");
+            e.estimate = field(row, "consensusForecast");
+            e.surprise = field(row, "percentageSurprise");
+            out.earnings.push_back(e);
+        }
+    std::sort(out.earnings.begin(), out.earnings.end(),
+              [](const auto &a, const auto &b) { return a.day < b.day; });
+    out.earnings.erase(std::unique(out.earnings.begin(), out.earnings.end(),
+                                   [](const auto &a, const auto &b) { return a.day == b.day; }),
+                       out.earnings.end());
+    auto calendar = data("calendar");
+    out.upcoming_note = string_value(calendar.value("reportText", Json{}));
+    auto day = report_date(out.upcoming_note);
+    if (!day.empty() && day >= date(now(), "%Y-%m-%d")) {
+        EarningsEvent e;
+        e.day = day;
+        e.upcoming = true;
+        std::smatch match;
+        if (std::regex_search(out.upcoming_note, match,
+                              std::regex(R"(consensus EPS forecast[^$]*\$(-?[0-9]+(?:\.[0-9]+)?))")))
+            e.estimate = num(match[1].str());
+        out.earnings.push_back(e);
+    }
+    return out;
+}
+static int fiscal_month(const std::string &fiscal) {
+    std::tm tm{};
+    std::istringstream in(fiscal);
+    in >> std::get_time(&tm, "%b %Y");
+    return in.fail() ? -1 : (tm.tm_year + 1900) * 12 + tm.tm_mon;
+}
+double trailing_eps(const std::vector<EarningsEvent> &events, size_t end) {
+    if (end < 3 || end >= events.size())
+        return missing;
+    double sum = 0;
+    for (size_t i = end - 3; i <= end; ++i) {
+        if (events[i].upcoming || !std::isfinite(events[i].actual))
+            return missing;
+        int month = fiscal_month(events[i].fiscal);
+        if (month < 0 || (i > end - 3 && month - fiscal_month(events[i - 1].fiscal) != 3))
+            return missing;
+        sum += events[i].actual;
+    }
+    return sum;
+}
+Result eps_series(const Fundamentals &fund, const std::vector<Bar> &bars, bool trailing) {
+    Result result;
+    result.pane = true;
+    result.name = trailing ? "EPS / trailing 4 quarters" : "EPS / reported quarter";
+    result.lines.assign(1, std::vector<double>(bars.size(), missing));
+    result.colors = {rgba(200, 128, 200)};
+    size_t event = 0;
+    double value = missing;
+    for (size_t i = 0; i < bars.size(); ++i) {
+        // Date-only reports might be after the close: use the next calendar day,
+        // never the fiscal quarter end, as the earliest availability boundary.
+        while (event < fund.earnings.size() && !fund.earnings[event].upcoming &&
+               parse_time(fund.earnings[event].day + "T00:00:00") + 86400 <= bars[i].time) {
+            value = trailing ? trailing_eps(fund.earnings, event) : fund.earnings[event].actual;
+            ++event;
+        }
+        result.lines[0][i] = value;
+    }
+    return result;
 }
 } // namespace cr

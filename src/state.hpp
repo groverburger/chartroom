@@ -16,6 +16,34 @@ struct List {
     std::string name;
     std::vector<std::string> symbols;
 };
+struct WatchlistWindow {
+    int id = 1, list = 0;
+    bool open = true, focus = false;
+    char jump[64]{}, input[64]{}, name[128]{};
+    std::string error;
+};
+struct OptionMarker {
+    std::string expiry;
+    double strike = 0;
+    bool puts = false;
+};
+struct OptionPreview {
+    int chart = 0;
+    OptionMarker marker;
+};
+struct CompanySnapshot {
+    Fundamentals data;
+    Json parts = Json::object(), part_times = Json::object();
+    bool initialized = false, loading = false;
+    Time next = 0;
+    uint64_t revision = 0;
+    std::string error;
+};
+struct FundamentalsWindow {
+    bool open = false, focus = false, follow = true;
+    std::string symbol = "AAPL";
+    char input[64]{};
+};
 struct Panel {
     int id = 1, tf = 2;
     std::string symbol = "SPY";
@@ -32,12 +60,16 @@ struct Panel {
     bool dirty = true;
     char search[128]{};
     bool show_drawings = true;
+    bool earnings = true, eps = false, eps_ttm = false;
     DrawingInteraction drawing;
+    std::optional<OptionMarker> option_marker;
+    bool option_ladder = false, ladder_volume = false;
 };
 struct OptionsWindow {
     bool open = false, loading = false, focus = false;
     std::string symbol = "SPY", expiry, key, error, centered_key;
     bool puts = false, dates_loading = false;
+    int target_chart = 0;
     std::string dates_symbol, dates_error;
     OptionDates dates;
     Time dates_retry = 0;
@@ -66,11 +98,24 @@ class State {
     uint64_t available_build = 0;
     OptionsWindow options;
     ScreenerWindow screener;
+    FundamentalsWindow fundamentals;
+    std::map<std::string, CompanySnapshot> companies;
+    CompanySnapshot &company(const std::string &, bool force = false);
     void refresh_options(bool force = false);
     void refresh_option_dates(bool full = false);
     void refresh_screener();
     std::vector<std::unique_ptr<Panel>> panels;
+    std::vector<Json> closed_charts;
+    int focus_chart = 0;
+    std::optional<OptionPreview> option_preview;
+    bool reopen_chart(size_t index);
+    Panel *option_target() const;
+    bool options_visible() const;
     std::vector<List> lists;
+    std::vector<std::unique_ptr<WatchlistWindow>> watchlists;
+    int next_watchlist_id = 1, watchlist_catalog = 0;
+    WatchlistWindow &add_watchlist(int list = -1);
+    void delete_list(int index);
     DrawingBook drawings;
     std::map<std::string, Quote> quotes;
     std::map<std::string, std::string> quote_errors;
@@ -103,9 +148,10 @@ class State {
     std::string last_saved;
     bool may_save = true, save_pending = true;
     uint64_t visual_revision = 0;
-    std::map<std::string, bool> quote_stale;
+    std::map<std::string, int> quote_display_state;
     std::set<std::pair<std::string, int>> needed_series() const;
     std::vector<std::string> visible_symbols() const;
+    std::set<std::string> needed_companies() const;
     std::string key(const std::string &, int tf) const;
     void fetch(const std::string &, int tf, bool full = false);
     void fetch_quote(const std::string &);

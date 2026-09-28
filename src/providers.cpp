@@ -108,16 +108,18 @@ void Providers::quote(std::string symbol, QuoteCallback cb) {
         return;
     }
     auto fallback = [this, symbol, cb] {
-        net.get(history_url(symbol, "1m", now() - 300, now()),
-                [symbol, cb](std::string body, std::string error) {
-                    try {
-                        if (!error.empty())
-                            throw std::runtime_error(error);
-                        cb(parse_quote(body, symbol), {});
-                    } catch (const std::exception &e) {
-                        cb({}, "Yahoo: " + std::string(e.what()));
-                    }
-                });
+        auto url = history_url(symbol, "1m", now() - 300, now());
+        url.replace(url.find("includePrePost=false"), std::string("includePrePost=false").size(),
+                    "includePrePost=true");
+        net.get(url, [symbol, cb](std::string body, std::string error) {
+            try {
+                if (!error.empty())
+                    throw std::runtime_error(error);
+                cb(parse_quote(body, symbol), {});
+            } catch (const std::exception &e) {
+                cb({}, "Yahoo: " + std::string(e.what()));
+            }
+        });
     };
     if (!nasdaq_symbol(symbol) || retry["quote:" + symbol] > now()) {
         fallback();
@@ -223,5 +225,37 @@ void Providers::screen(ScreenQuery q, std::function<void(ScreenResult, std::stri
                      cb({}, "TradingView scanner: " + std::string(e.what()));
                  }
              });
+}
+void Providers::fundamentals(std::string symbol, std::function<void(Json, std::string)> cb) {
+    struct Pending {
+        Json parts = Json::object();
+        int remaining = 4;
+        std::string error;
+    };
+    auto pending = std::make_shared<Pending>();
+    const std::pair<std::string, std::string> urls[] = {
+        {"summary", nasdaq_url(symbol, "summary")},
+        {"profile", "https://api.nasdaq.com/api/company/" + symbol + "/company-profile"},
+        {"earnings", "https://api.nasdaq.com/api/company/" + symbol + "/earnings-surprise"},
+        {"calendar", "https://api.nasdaq.com/api/analyst/" + symbol + "/earnings-date"}};
+    for (auto [part, url] : urls)
+        net.get(url, [pending, part, symbol, cb](std::string body, std::string error) {
+            try {
+                if (!error.empty())
+                    throw std::runtime_error(error);
+                auto parsed = Json::parse(body);
+                if (!parsed.contains("data") || !parsed["data"].is_object())
+                    throw std::runtime_error("unavailable for this symbol");
+                // Validate identity/schema before accepting any component into its cache.
+                parse_fundamentals(Json{{part, parsed}}, symbol);
+                pending->parts[part] = std::move(parsed);
+            } catch (const std::exception &e) {
+                if (!pending->error.empty())
+                    pending->error += "; ";
+                pending->error += part + ": " + e.what();
+            }
+            if (--pending->remaining == 0)
+                cb(std::move(pending->parts), pending->error);
+        });
 }
 } // namespace cr

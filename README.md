@@ -11,11 +11,11 @@ This repository contains the C++20 application, which runs on desktop and in the
 - **Multiple charts:** independent symbols, timeframes, and indicators, with grid, column, row, and tabbed layouts.
 - **Interactive navigation:** pan through history, zoom around the cursor, and inspect prices with a crosshair that snaps to bars. The price axis automatically fits visible data.
 - **Chart styles:** candlesticks, OHLC bars, or a line chart, with volume and round-number price levels.
-- **Drawings and measurement:** a detachable tools window with saved horizontal levels, trendlines, rays, rectangles, text notes, and Fibonacci retracements, with locking and undo/redo. Shift-drag to measure price changes and elapsed time.
-- **Technical indicators:** SMA, EMA, Bollinger Bands, RSI, MACD, ATR, and an MA ribbon with trend-colored bars.
+- **Drawings and measurement:** a dockable tools window with saved horizontal levels, trendlines, rays, rectangles, text notes, and Fibonacci retracements, with locking and undo/redo. Shift-drag to measure price changes and elapsed time.
+- **Technical indicators:** SMA, EMA, VWMA, Bollinger Bands, Donchian and Keltner channels, swing pivots, RSI, Stochastic, MACD, ATR, rate of change, on-balance volume, and an MA ribbon with trend-colored bars.
 - **Options chains:** Nasdaq calls and puts by expiry, with bid/ask, last price, volume, open interest, and in-the-money shading.
 - **Stock screener:** largest companies, gainers, losers, and most active US stocks, with price, capitalization, volume, and sector filters.
-- **Watchlists:** SPY, BTC, GLD, VIX, QQQ, and RSP are pinned above a large-cap list. Create custom lists for other symbols.
+- **Watchlists:** open several independent windows, edit your At a glance favorites, and explore starter lists across assets, sectors, and company groups. Create your own lists too.
 - **Event-driven rendering:** redraws for input, data changes, and UI timers, then sleeps when idle. Minimized windows and hidden browser tabs skip rendering.
 - **Saved workspaces:** charts, indicators, colors, layouts, watchlists, and chart positions persist between sessions. Cached history is available offline.
 
@@ -85,7 +85,9 @@ The preview server serves the application and proxies a fixed set of provider ro
 
 ### Charts and navigation
 
-Click a chart to select it, then click a symbol in the sidebar to change its symbol. To load a symbol without adding it to a watchlist, type it into **Go to symbol** above the sidebar tickers and press **Enter** or **Go**. Ctrl-click or Cmd-click a symbol to open another chart. Charts can be duplicated, closed, arranged into preset layouts, or docked by dragging their tabs.
+Click a chart to select it, then click a symbol in the sidebar to change its symbol. To load a symbol without adding it to a watchlist, type it into **Go to symbol** above the sidebar tickers and press **Enter** or **Go**. Ctrl-click or Cmd-click a symbol to open another chart. Use **+ Add panel** to open a chart, watchlist, options chain, or screener. The **Panels** menu lists open windows and offers duplication and closing; **Layout** arranges charts, and dragging tabs docks them.
+
+Restore a closed chart through **Panels → Reopen closed chart**, **Recently closed**, or **Ctrl/Cmd+Shift+T**. The last 20 closed charts retain their symbols, views, indicators, and settings across restarts. Chartroom keeps at least one chart open. **Workspace → Save workspace** saves immediately; changes also save automatically.
 
 | Action | Control |
 | --- | --- |
@@ -93,17 +95,19 @@ Click a chart to select it, then click a symbol in the sidebar to change its sym
 | Zoom around the cursor | Scroll vertically over a chart |
 | Pan with the keyboard | Left/Right arrows or A/D while the pointer is over a chart |
 | Jump to the oldest data | Home |
-| Return to the latest 220 bars | End, double-click, or **Latest** |
+| Return to the latest 220 bars with 25% future space | End, double-click, or **Latest** |
 | Change chart style | **View → Chart style** |
 | Use a logarithmic price axis | **View → Price scale → Logarithmic** |
 | Measure a move | Shift-drag between two points |
 | Undo / redo a drawing edit | Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z (or Ctrl+Y) |
 
-Panning can extend beyond the available history. Vertical scaling stays automatic when panning or zooming. Over loaded history, the crosshair snaps horizontally to each bar's center and displays its OHLCV values; in empty space it follows the pointer freely.
+The time axis uses local calendar boundaries: hours or days when zoomed in, then weeks, months, quarters, and years as the range grows. Month labels use full names such as **March**; January boundaries show the year. Vertical gridlines follow those boundaries. Labels cover the full visible range, including future space, with spacing that prevents overlap. Outside loaded history, dates follow the nominal chart interval rather than a forecast exchange calendar.
+
+New charts place the latest candle three-quarters of the way across the plot, leaving 25% for future dates. This position follows new bars as data refreshes; saved historical views retain their position. Panning can extend beyond the available history. Vertical scaling stays automatic when panning or zooming. Over loaded history, the crosshair snaps horizontally to each bar's center and displays its OHLCV values; in empty space it follows the pointer freely.
 
 Trackpad scrolling follows the gesture's initial direction: horizontal swipes pan, while vertical swipes zoom. Small diagonal movements and momentum do not switch between the two.
 
-Each chart shows **Updated** with the UTC time of its last successful data refresh. Hover over the timestamp for the provider’s price timestamp and cache/refresh status. Failed refreshes retain the last successful time.
+Each chart shows **Updated** with the local time of its last successful data refresh. Hover over the timestamp for the provider’s price timestamp and cache/refresh status. Failed refreshes retain the last successful time.
 
 Logarithmic mode gives equal percentage moves equal vertical distance. The setting is saved per chart and copied when duplicating a chart. Candles, price overlays, crosshairs, and drawings share the scale; volume and oscillator panes retain their own axes. Auto-fit remains active. If visible price data or an overlay includes zero or negative values, the chart temporarily uses linear scaling and shows a notice. Fibonacci levels retain their configured arithmetic price ratios.
 
@@ -111,7 +115,7 @@ OHLC bars use a left tick for the opening price and a right tick for the closing
 
 ### Drawings and measurement
 
-Open **Draw** on a chart to show the drawing tools window. Drag its title bar to move or dock it. Desktop builds let you drag it outside the main application window; in the browser it floats inside the canvas. The window stays open between drawings, and its position and open/closed state are saved. Use the chart selector at the top to choose which chart receives the tool.
+Open **Draw** on a chart to show the drawing tools window. Drag its title bar to move or dock it. Floating panels stay inside the main application window on desktop and inside the canvas in the browser. The window stays open between drawings, and its position and open/closed state are saved. Use the chart selector at the top to choose which chart receives the tool.
 
 Choose a tool:
 
@@ -134,7 +138,13 @@ Undo and redo cover drawing creation, movement, settings, locking, and deletion 
 
 Open **Indicators** to search for and add an indicator. Expand an entry under **On this chart** to edit its settings.
 
-SMA and EMA indicators each have a **Line color** setting. New moving averages automatically cycle through a color palette to help distinguish them.
+SMA, EMA, and VWMA indicators each have a **Line color** setting. New moving averages automatically cycle through a color palette to help distinguish them.
+
+**Swing highs / lows (pivot points)** marks a high strictly above the preceding N and following N highs, or a low strictly below the corresponding lows (N = 5 by default). Pink triangles mark highs; cyan triangles mark lows. Each can be toggled and colored separately. A marker is placed on the pivot bar only after the following N bars have closed: it was not available on the pivot day itself. Equal highs/lows are excluded. Confirmation uses provider session times where available, otherwise the interval boundary; weekly pivots conservatively wait for the week boundary or the next weekly bar.
+
+**Donchian channel** is a separate indicator. It plots the highest high and lowest low over the last N bars (20 by default), with an optional midpoint. Enable **Exclude current bar** to compare price against the previous N bars. It uses the chart’s timeframe.
+
+**Keltner channels** combine an EMA with configurable ATR bands. **Stochastic** provides separate lookback, %K smoothing, and %D smoothing settings; **rate of change** shows the percentage move over N bars. **VWMA** weights closing prices by volume. **OBV** accumulates signed volume from zero; unavailable volume leaves gaps rather than implying no trading.
 
 **MA ribbon colored bars** combines the 20, 50, 100, 150, and 200 EMAs. Their ordering determines the bar color, from strong bearish to strong bullish. Its settings include:
 
@@ -146,19 +156,43 @@ Historical ribbon values are aligned without looking ahead to future source bars
 
 ### Watchlists
 
-Create a custom list, then enter symbols to add them. Right-click a symbol to reorder or remove it. Lists can also be renamed or deleted. Sidebar percentages use Nasdaq snapshots where supported, with Yahoo’s current regular-session price and explicit previous close as a fallback. They refresh approximately every minute for symbols in the selected watchlist and open charts. Requests are staggered, and stale or failed quotes appear muted; hover for the quote time or error. Chart refreshes also request a fresh sidebar quote.
+**At a glance** is an editable favorites list, initially containing SPY, BTC, GLD, VIX, QQQ, and RSP. Starter lists cover crypto, metals and miners, US sectors, futures, bonds and credit, currencies, global markets, investment styles, and major company groups. **Macro & economic proxies** collects tradable instruments and indices for rates, credit, inflation protection, commodities, and volatility; it does not contain economic releases such as CPI or employment reports.
+
+Open **+ Add panel → Watchlist** and choose a list to open another independent window. Each window has its own list selection, can dock or float inside the app, and can be closed and reopened. **Lists → Open list in another window** opens a second view of the same list. Windows and their selections persist across restarts. Edits to a list appear in every window displaying it.
+
+Use **Lists** to create, rename, or delete lists, then enter symbols to add them. Right-click a symbol to reorder, remove, or copy it to another list. Existing custom lists are preserved when starter lists are added; deleted starters stay deleted.
+
+Watchlist percentages show the regular-session change, including the last completed session during pre/post-market trading. Nasdaq supplies separate regular and extended quotes; Yahoo regular-session metadata is the fallback. They refresh approximately every minute for symbols in open watchlist windows and charts; unopened starter lists do not trigger downloads. Requests are staggered, and stale or failed quotes appear muted; hover for the quote time or error. Chart refreshes also request a fresh sidebar quote.
+
+Fresh extended-hours quotes appear as an amber **Pre** or **Post** indicator in the watchlist and a dotted horizontal price line on the chart. Hover for the quote time and extended-hours change versus the regular close. These prices do not enter candles or the sidebar percentage. When the price is outside the visible scale, an edge tag points toward it; the automatic price range stays based on candles and indicators. Extended quotes come from Nasdaq, with Yahoo's recent extended-session minutes as a fallback. Quotes older than 30 minutes, or snapshots not refreshed for 10 minutes, lose the live marker; cached values remain identified as stale in the tooltip. Provider delays still apply.
 
 ### Options and screener
 
-Use **Market → Options** or **Market → Screener** in the sidebar. Both are movable, dockable windows; desktop builds can detach them outside the main window. Their open state, position, and settings are saved.
+Use **+ Add panel → Options chain** or **Screener** in the menu bar. Both are movable, dockable panels that stay inside the main application window. Their open state, position, and settings are saved.
 
 The options window starts with the active chart's symbol. Enter another underlying and press **Load**, or select **Use active chart**. Choose an **Expiry** and switch between **Calls** and **Puts**. Only one side is displayed at a time, with higher strikes at the top. Muted cyan and purple row shading, drawn from the MA ribbon palette, distinguish **ITM** and **OTM**. A subtle neutral highlight marks the nearest listed strike (**ATM**). Moneyness uses the underlying price in the chain snapshot; a tie between nearest strikes marks the lower strike as ATM. New selections scroll to ATM automatically; `--` means the provider did not supply a value. Open interest and volume are contract counts. **Open underlying chart** returns to analysis of the underlying; this view does not chart option contracts or place trades.
+
+Choose a **Linked chart** of the same underlying, then hover an option row to preview its strike and expiry on that chart. Click to pin the marker; the mouse crosshair remains independent. The pin survives restarts. **Clear option** removes it, and **Show expiry** pans the chart to its date. Off-screen markers point toward the relevant edge. Expiry anchors use the date at midnight UTC, not a settlement cutoff; future spacing uses the chart interval. Markers leave automatic price fitting unchanged.
+
+Enable **Strike ladder** to show open interest or volume beside the linked chart's price axis. Bar lengths compare contract counts for the selected expiry and side; hover for the exact value and snapshot time. The ladder follows the options window's underlying, expiry, and Calls/Puts selection. Its selected expiry continues refreshing when the options window is closed. Pins, ladder visibility, and metric choices are saved.
 
 Opening Options performs a one-row expiry lookup, then loads contracts only for the selected expiry. Opening the expiry picker discovers the remaining dates from Nasdaq's near-money rows; the date list is cached for a day. Each expiry has its own cache. Calls and puts for that expiry arrive together, so switching sides needs no request. Revisiting a recently loaded expiry uses its cache immediately. Requests paginate within that expiry if necessary, with a notice if the provider's 20,000-row limit is reached. This view supports Nasdaq's US stock and ETF options, without calculated Greeks or implied volatility.
 
 The screener covers common stocks listed on Nasdaq, NYSE, and AMEX. Choose **Largest companies**, **Top gainers**, **Top losers**, or **Most active**. Expand **Filters** to set minimum price, market capitalization in billions of dollars, share volume, or an exact provider sector name, then **Apply filters**. Results are paginated in groups of 100; **Find on this page** searches only the current page.
 
-Click a result to load its chart, or Ctrl/Cmd-click to open a new chart. Right-click for options or to add the symbol to the current watchlist. Screeners and chains refresh every 60 seconds while open, stop polling when closed, and retain the last successful snapshot on errors. The last chain for each underlying/expiry and the last screener page are cached for offline use.
+Click a result to load its chart, or Ctrl/Cmd-click to open a new chart. Right-click for options or to choose a watchlist to add the symbol to. Screeners and chains refresh every 60 seconds while open (or while a linked strike ladder is enabled), stop polling when no longer displayed, and retain the last successful snapshot on errors. The last chain for each underlying/expiry and the last screener page are cached for offline use.
+
+## Company fundamentals and earnings
+
+Choose **Facts** on a chart, or **Add panel → Fundamentals**, for company profiles, sector/industry, market cap, dividend information, and recent earnings. The window follows the selected chart by default; enter a symbol to inspect another company independently.
+
+US company charts display **E** markers beside the date axis. Hover for reported EPS, consensus, and surprise; click for company facts. Nearby events combine into a **+** marker when zoomed out. Upcoming dates appear in gold and are estimates, not confirmed schedules. Toggle markers in **View → Earnings markers**.
+
+Enable **EPS line (reported earnings)** in **Indicators** or the Fundamentals window. The separate pane can show quarterly reported EPS or the sum of four consecutive quarters. Date-only reports become available on the following day, because their release time is unknown. The line never starts at the fiscal quarter end. This is reported EPS, not an IBD rating; the provider's EPS basis may differ from GAAP.
+
+Nasdaq supplies a short recent earnings history, typically four quarters. Chartroom caches reports and retains older ones as new reports arrive; it cannot reconstruct a long historical EPS curve from the initial snapshot. Fundamentals refresh every six hours while in use, with a manual **Refresh** button. Unsupported symbols show no invented events or values.
+
+All displayed timestamps and chart time boundaries use the computer's or browser's local timezone, including daylight-saving changes. Published date-only earnings and expiry dates retain their calendar date. Stored timestamps and provider requests remain UTC; four-hour candle aggregation is unchanged.
 
 ## Market data
 
@@ -168,6 +202,7 @@ Chartroom uses the public endpoints identified in [OpenTerminal](https://github.
 | --- | --- |
 | US stock/ETF daily history | Nasdaq chart OHLC, supplemented with later Yahoo daily sessions so an active candle can update; Yahoo fallback, then Stooq end-of-day CSV |
 | US stock/ETF sidebar quotes | Nasdaq quote info, falling back to Yahoo minute metadata |
+| Company facts, earnings dates and EPS | Nasdaq summary, profile, earnings surprise and earnings calendar |
 | Hourly/weekly history, futures, indices, USD crypto composites | Yahoo chart endpoint |
 | Explicit crypto pairs such as `BTCUSDT` | Binance klines and 24-hour ticker |
 | Options chains | Nasdaq option-chain endpoint |
@@ -177,7 +212,7 @@ The chart status identifies the actual provider and quote currency. `BTC`, `ETH`
 
 Supported timeframes are 1h, 4h, 1D, and 1W. Yahoo hourly requests cover up to 729 days; other history is limited to what the provider returns. Four-hour candles are aggregated in UTC buckets. Provider changes replace the cached series instead of mixing historical price adjustments. Nasdaq daily candles represent completed sessions; if the Yahoo supplement fails, a provider notice identifies the missing current-session update. Line-only responses are never turned into artificial OHLC candles.
 
-Open charts and custom indicator source series refresh approximately every 60 seconds. Charts positioned at the latest candle follow new bars; historical views retain their position. Downloads run asynchronously. A failed refresh retains cached data and retries later.
+Open charts and custom indicator source series refresh approximately every 60 seconds. Charts positioned at the latest candle follow new bars; historical views retain their position. Downloads run asynchronously. An empty chart shows a centered loading state; failed initial downloads offer **Retry**. The loading illustration is static to preserve idle rendering. A failed refresh retains cached data and retries later.
 
 Invalid zero-price VIX candles are rejected, including ones saved by older builds. Recent daily VIX candles can be rebuilt from hourly data when every expected hourly bucket is available, using Yahoo’s session boundaries. Rebuilt candles are identified in the chart status; incomplete coverage leaves the candle unavailable or retains a previously valid cached candle.
 
@@ -204,7 +239,7 @@ Desktop command-line options include:
 | `--offline` | Open using cached history without downloading updates |
 | `--fetch SYMBOL` | Check the market-data connection without opening a window |
 | `--import-julia PATH` | Import a workspace from the Julia version on first launch |
-| `--version` | Print the build version and UTC build time |
+| `--version` | Print the build version and local build time |
 | `--help` | List all available options |
 
 On macOS, pass options to `build/chartroom.app/Contents/MacOS/chartroom` rather than to `open`.
@@ -227,7 +262,7 @@ Minimized desktop windows and hidden browser tabs skip rendering and redraw when
 
 ## Build versions
 
-The sidebar shows the version of the running application, such as `v0.1.0+12`. Hover over it for the UTC build time and update status. Every application build automatically advances the build number, including rebuilds with no source changes. Native and browser builds share a counter in `.build-sequence` within the checkout; keep that file to retain the sequence. Separate fresh checkouts start their own sequence.
+The sidebar shows the version of the running application, such as `v0.1.0+12`. Hover over it for the local build time and update status. Every application build automatically advances the build number, including rebuilds with no source changes. Native and browser builds share a counter in `.build-sequence` within the checkout; keep that file to retain the sequence. Separate fresh checkouts start their own sequence.
 
 After a successful link, the build publishes `build-info.json`. Once a minute, a running app checks the manifest for its installation: desktop builds read the file beside the executable (inside Resources on macOS), and browser builds fetch it from the server. A newer build shows **Restart to update** on desktop or **Reload** in the browser. The Reload button saves the workspace before reloading. These checks compare against the installed or served build, not a remote release catalog.
 
@@ -255,6 +290,8 @@ CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_quote_test.
 CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_log_test.cjs
 CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_market_test.cjs
 CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_options_test.cjs
+CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_sessions_test.cjs
+CHARTROOM_URL=http://localhost:8080/chartroom.html node test/browser_watchlists_test.cjs
 ```
 
 Set `PLAYWRIGHT_MODULE` if Playwright is outside the normal Node module path, or `CHROMIUM_EXECUTABLE` to use a specific Chromium binary. The tests cover data loading, navigation, drawing gestures, undo/redo, measurement, multiple charts, persistence, resizing, pixel-density changes, Fibonacci settings, floating-window persistence, build update notices, idle rendering, and background refresh deadlines.

@@ -27,6 +27,7 @@ struct History {
 };
 struct View {
     static constexpr int default_count = 220;
+    static constexpr double latest_position = .75;
     double first = 0, count = default_count;
     void fit(size_t n);
     void zoom(size_t n, double wheel, double anchor);
@@ -69,6 +70,8 @@ inline constexpr std::array<uint32_t, 8> ma_palette = {blue,
 struct Indicator {
     std::string kind = "EMA";
     bool enabled = true, colored_bars = true, show_emas = true, background = true;
+    bool exclude_current = false, midline = true, show_highs = true, show_lows = true;
+    uint32_t low_color = rgba(0, 160, 210);
     uint32_t color = blue;
     std::array<uint32_t, 5> ma_colors = ema_colors;
     int period = 20, slow = 26, signal = 9, timeframe = 0;
@@ -76,10 +79,16 @@ struct Indicator {
 };
 struct Result {
     std::string name;
-    bool pane = false, colored_bars = false, background = true;
+    bool pane = false, colored_bars = false, background = true, pivots = false;
     std::vector<std::vector<double>> lines;
     std::vector<uint32_t> colors;
     std::vector<double> histogram, scores;
+};
+struct ExtendedQuote {
+    double price{};
+    Time asof{}, fetched{};
+    std::string session; // Pre or Post; distinct from the regular-session quote.
+    std::string source = "Yahoo";
 };
 struct Quote {
     double price{}, change{};
@@ -87,7 +96,9 @@ struct Quote {
     bool snapshot = false;
     std::string source = "Yahoo";
     bool rolling = false;
+    std::optional<ExtendedQuote> extended = {};
 };
+bool fresh_extended(const Quote &, Time clock);
 struct Grid {
     double step{}, major{};
     std::vector<double> levels;
@@ -98,17 +109,28 @@ inline const std::vector<std::string> big_names = {
     "MA",   "WMT",  "COST", "NFLX", "AMD",   "ORCL", "PLTR", "XOM",  "LLY",   "UNH", "GS"};
 inline const char *timeframes[] = {"1h", "4h", "1D", "1W"};
 inline const char *intervals[] = {"1h", "1h", "1d", "1wk"};
-inline const char *kinds[] = {"SMA", "EMA", "BB", "RSI", "MACD", "ATR", "RIBBON"};
+inline const char *kinds[] = {"SMA",      "EMA", "BB",    "RSI", "MACD", "ATR", "RIBBON",
+                              "DONCHIAN", "KC",  "STOCH", "ROC", "VWMA", "OBV", "PIVOTS"};
 inline const char *names[] = {"Simple moving average",
                               "Exponential moving average",
                               "Bollinger Bands",
                               "Relative strength index",
                               "MACD",
                               "Average true range",
-                              "MA ribbon colored bars"};
+                              "MA ribbon colored bars",
+                              "Donchian channel",
+                              "Keltner channels",
+                              "Stochastic oscillator",
+                              "Rate of change",
+                              "Volume-weighted moving average",
+                              "On-balance volume",
+                              "Swing highs / lows (pivot points)"};
 Time now();
 Time parse_time(const std::string &);
-std::string date(Time, const char *format = "%Y-%m-%d %H:%M");
+std::string date(Time, const char *format = "%Y-%m-%d %H:%M"); // UTC for storage and provider requests.
+std::string local_date(Time, const char *format = "%Y-%m-%d %H:%M %Z");
+Time local_wall(Time);    // Local civil fields encoded on a UTC-shaped calendar for grid arithmetic.
+Time local_instant(Time); // Convert those civil fields back using the system/browser DST rules.
 std::string normalize_symbol(std::string);
 std::string display_symbol(const std::string &);
 std::string url_encode(const std::string &);

@@ -38,6 +38,15 @@ struct Drawing {
 // history and the nominal interval outside it, without inventing exchange sessions.
 double drawing_index(const std::vector<Bar> &, Time, Time step);
 Time drawing_time(const std::vector<Bar> &, double index, Time step);
+struct TimeTick {
+    Time time{};
+    double index{};
+    std::string label;
+    bool major = false;
+};
+// Calendar boundaries over the full visible range, including extrapolated space.
+std::vector<TimeTick> time_grid(const std::vector<Bar> &, const View &, Time step, double pixels,
+                                bool local = false);
 struct Measurement {
     double change{}, percent{}, bars{};
     Time seconds{};

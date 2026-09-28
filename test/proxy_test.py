@@ -18,6 +18,22 @@ class ProxyTest(unittest.TestCase):
         url, _, _ = server.upstream('/binance/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=1000')
         self.assertTrue(url.startswith('https://api.binance.com/'))
 
+    def test_fundamentals(self):
+        for path in ['/api/company/AAPL/company-profile', '/api/company/AAPL/earnings-surprise', '/api/analyst/AAPL/earnings-date']:
+            url, _, body = server.upstream('/nasdaq' + path)
+            self.assertEqual(url, 'https://api.nasdaq.com' + path)
+            self.assertIsNone(body)
+            with self.assertRaises(ValueError):
+                server.upstream('/nasdaq' + path + '?url=https://example.com')
+        self.assertIn('/summary?', server.upstream('/nasdaq/api/quote/AAPL/summary?assetclass=stocks')[0])
+
+    def test_extended_quotes_only(self):
+        route = '/yahoo/v8/finance/chart/SPY?period1=123&period2=456&includePrePost=true'
+        self.assertIn('includePrePost=true', server.upstream(route + '&interval=1m')[0])
+        self.assertIn('includePrePost=false', server.upstream(route + '&interval=1d')[0])
+        with self.assertRaises(ValueError):
+            server.upstream(route.replace('true', 'invalid') + '&interval=1m')
+
     def test_expiry_discovery(self):
         url, _, _ = server.upstream('/nasdaq/api/quote/SPY/option-chain?assetclass=etf&limit=1&fromdate=all&money=all')
         self.assertIn('limit=1', url)

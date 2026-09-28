@@ -59,11 +59,42 @@ int main() {
                                                              {"asof", date(quote_time, "%Y-%m-%dT%H:%M:%S")},
                                                              {"fetched_at", date(now(), "%Y-%m-%dT%H:%M:%S")},
                                                              {"snapshot", true}});
+        auto cached_quote = read_json(cache_path(directory, "AAPL", "quote"));
+        cached_quote["extended"] = {{"price", 153},
+                                    {"asof", quote_time + 3600},
+                                    {"fetched", now()},
+                                    {"session", "Post"},
+                                    {"source", "Nasdaq"}};
+        atomic_json(cache_path(directory, "AAPL", "quote"), cached_quote);
+        auto obsolete = cached_quote;
+        obsolete["symbol"] = "QQQ";
+        obsolete["source"] = "Nasdaq";
+        obsolete["version"] = 1;
+        atomic_json(cache_path(directory, "QQQ", "quote"), obsolete);
         {
             State s(directory, true);
+            CHECK(!s.quotes.count("QQQ"));
+            CHECK(s.quotes.at("AAPL").extended->price == 153);
+            CHECK(s.quotes.at("AAPL").extended->source == "Nasdaq");
             CHECK(s.quotes.at("AAPL").price == 150);
             s.ensure("AAPL", 2); // Loading older chart history must not roll the sidebar back.
             CHECK(s.quotes.at("AAPL").price == 150 && s.quotes.at("AAPL").snapshot);
+        }
+        // Live markers expire with one scheduled redraw even when working offline.
+        {
+            State s(directory, true);
+            s.tick();
+            s.quotes.clear();
+            Quote q{150, 3.5, now() - 86400, now(), true};
+            q.extended = ExtendedQuote{153, now() - 1700, now(), "Pre"};
+            s.quotes["SPY"] = q;
+            s.tick();
+            s.save(true);
+            CHECK(s.next_deadline() == q.extended->asof + 1800);
+            CHECK(!s.tick());
+            s.quotes["SPY"].extended->fetched = now() - 601;
+            CHECK(s.tick());
+            CHECK(!fresh_extended(s.quotes["SPY"], now()));
         }
         Json expected;
         {
@@ -75,6 +106,12 @@ int main() {
             p.indicators.push_back(indicator("RIBBON"));
             p.indicators.back().timeframe = 4;
             p.volume = false;
+            p.earnings = false;
+            p.eps = true;
+            p.eps_ttm = true;
+            s.fundamentals.open = true;
+            s.fundamentals.follow = false;
+            s.fundamentals.symbol = "AAPL";
             p.ohlc = true;
             p.logarithmic = true;
             p.indicators.back().background = false;
@@ -87,6 +124,7 @@ int main() {
             CHECK(duplicate.view.first == p.view.first);
             CHECK(duplicate.indicators[0].timeframe == 4);
             CHECK(!duplicate.volume);
+            CHECK(!duplicate.earnings && duplicate.eps && duplicate.eps_ttm);
             CHECK(duplicate.ohlc);
             CHECK(duplicate.logarithmic);
             CHECK(!duplicate.indicators[0].background);
@@ -159,6 +197,107 @@ int main() {
             CHECK(s.drawings.for_symbol("BTC-USD").empty());
             CHECK(s.drawings.for_symbol("SPY").size() == 2);
             CHECK(s.panels.front()->bars.size() == 400);
+        }
+        // Closed charts preserve their identity and complete settings across restarts.
+        auto archive_dir = directory / "archive";
+        atomic_json(cache_path(archive_dir, "SPY", "1d"), encode_history(h));
+        Json archived;
+        {
+            State s(archive_dir, true);
+            s.tick();
+            auto &p = s.current();
+            p.view.zoom(400, 2, .31);
+            p.indicators.push_back(indicator("RIBBON"));
+            p.indicators.back().background = false;
+            p.volume = false;
+            p.earnings = false;
+            p.eps = true;
+            p.eps_ttm = true;
+            s.fundamentals.open = true;
+            s.fundamentals.follow = false;
+            s.fundamentals.symbol = "AAPL";
+            p.logarithmic = true;
+            p.option_marker = OptionMarker{"2026-10-16", 135, true};
+            p.option_ladder = p.ladder_volume = true;
+            s.options.target_chart = p.id;
+            archived = s.document()["charts"][0];
+            s.add("AAPL");
+            p.open = false;
+            s.remove_closed();
+            CHECK(s.panels.size() == 1 && s.closed_charts.size() == 1);
+            CHECK(s.closed_charts[0] == archived);
+            CHECK(!s.option_target()); // Never attach SPY options to AAPL.
+            s.save(true);
+        }
+        {
+            State s(archive_dir, true);
+            CHECK(s.closed_charts.size() == 1);
+            CHECK(s.reopen_chart(0));
+            s.tick();
+            CHECK(s.current().id == archived["id"]);
+            CHECK(s.document()["charts"][1] == archived);
+            CHECK(s.option_target() == &s.current());
+            CHECK(s.options_visible()); // A ladder keeps its snapshot scheduled with Options closed.
+            CHECK(s.closed_charts.empty());
+            CHECK(!s.reopen_chart(0));
+            int highest = 0;
+            for (auto &p : s.panels)
+                highest = std::max(highest, p->id);
+            CHECK(s.add().id > highest);
+            for (int i = 0; i < 25; ++i) {
+                s.add().open = false;
+                s.remove_closed();
+            }
+            CHECK(s.closed_charts.size() == 20);
+            for (auto &p : s.panels)
+                p->open = false;
+            s.remove_closed();
+            CHECK(s.panels.size() == 1 && s.current().open);
+            s.current().option_marker = OptionMarker{"2026-10-16", 135, true};
+            s.select(s.current(), "BTC", 2);
+            CHECK(!s.current().option_marker);
+        }
+        // Migrate a legacy singleton sidebar, preserving user lists and edits.
+        auto watch_dir = directory / "watchlists";
+        auto legacy = expected;
+        legacy.erase("watchlist_windows");
+        legacy.erase("watchlist_catalog");
+        legacy.erase("next_watchlist_id");
+        legacy["lists"] = Json::array({{{"name", "My ideas"}, {"symbols", {"SPY", "AAPL"}}}});
+        legacy["selected_list"] = 0;
+        atomic_json(watch_dir / "workspace.json", legacy);
+        int favorite_index = 0, deleted_size = 0;
+        {
+            State s(watch_dir, true);
+            CHECK(s.lists.front().name == "My ideas" && s.lists.front().symbols.size() == 2);
+            CHECK(s.lists.size() >= 20 && s.watchlists.size() == 2);
+            favorite_index = s.watchlists[0]->list;
+            CHECK(s.lists[size_t(favorite_index)].name == "At a glance");
+            CHECK(s.watchlists[1]->list == 0);
+            s.lists[size_t(favorite_index)].symbols = {"GLD", "QQQ"};
+            auto &third = s.add_watchlist(favorite_index);
+            CHECK(third.id != s.watchlists.front()->id);
+            s.delete_list(0);
+            --favorite_index;
+            CHECK(s.watchlists[0]->list == favorite_index && third.list == favorite_index);
+            CHECK(s.lists[size_t(third.list)].symbols == std::vector<std::string>({"GLD", "QQQ"}));
+            s.delete_list(int(s.lists.size()) - 1);
+            deleted_size = int(s.lists.size());
+            s.save(true);
+        }
+        {
+            State s(watch_dir, true);
+            CHECK(s.watchlists.size() == 3 && int(s.lists.size()) == deleted_size);
+            CHECK(s.lists[size_t(favorite_index)].symbols == std::vector<std::string>({"GLD", "QQQ"}));
+            CHECK(s.watchlists[2]->list == favorite_index);
+            s.watchlists.clear();
+            s.save(true);
+        }
+        {
+            State s(watch_dir, true);
+            CHECK(s.watchlists.empty()); // Closing all windows is persistent, not a special case.
+            CHECK(int(s.lists.size()) == deleted_size); // Deleted starters must not reappear.
+            CHECK(s.add_watchlist(favorite_index).id > 3);
         }
         auto julia = directory / "julia";
         auto imported = directory / "imported";

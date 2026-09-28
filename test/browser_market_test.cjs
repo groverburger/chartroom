@@ -55,10 +55,10 @@ const fixture=name=>JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures',na
   assert.equal(h.meta.chartroomSource,'Nasdaq + Yahoo latest session');
   assert.equal(h.bars.length,5);assert.equal(h.bars.at(-1)[4],768);
   await page.waitForTimeout(600);
-  // Market -> Options, without disturbing the chart layout.
-  await page.mouse.click(155,70);await page.waitForTimeout(100);
+  // Add panel -> Options, without disturbing the chart layout.
+  await page.mouse.click(320,12);await page.waitForTimeout(100);
   await page.screenshot({path:'/private/tmp/chartroom-market-menu.png'});
-  await page.mouse.click(176,96);
+  await page.mouse.click(322,65);
   await page.waitForTimeout(500);
   await page.screenshot({path:'/private/tmp/chartroom-market-click.png'});
   await exists('/data/cache/535059.options-2026-09-23.json');

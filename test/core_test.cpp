@@ -127,6 +127,20 @@ int main(int argc, char **argv) {
         CHECK((partial.visible(400) == std::pair<int, int>(9, 26)));
         View v;
         v.fit(bars.size());
+        auto latest_position = [](const View &view, size_t n) {
+            return (double(n) - .5 - view.first) / view.count;
+        };
+        CHECK(near(latest_position(v, bars.size()), .75));
+        CHECK(near(v.count * .75, View::default_count));
+        for (size_t n : {1u, 5u, 200u}) {
+            View short_view;
+            short_view.fit(n);
+            CHECK(near(latest_position(short_view, n), .75));
+            auto fitted = short_view;
+            short_view.zoom(n, -1, .75);
+            CHECK(near(short_view.count, fitted.count));
+            CHECK(near(short_view.first, fitted.first));
+        }
         auto original = v;
         for (int i = 0; i < 100; ++i) {
             v.zoom(bars.size(), .25, .31);
@@ -144,6 +158,7 @@ int main(int argc, char **argv) {
         auto next = price_limits(shifted, v);
         CHECK(near(next.first, old.first + 20) && near(next.second, old.second + 20));
         auto document = encode_view(v, bars);
+        CHECK(document["follow"] == true);
         View restored;
         restore_view(restored, bars, document);
         CHECK(near(v.first, restored.first) && near(v.count, restored.count));
@@ -154,6 +169,19 @@ int main(int argc, char **argv) {
         extra.push_back({bars.back().time + 3600, 140, 145, 139, 144, 100});
         preserve_view(v, bars, extra);
         CHECK(near(v.first, original.first + 1));
+        CHECK(near(latest_position(v, extra.size()), .75));
+        // Older saved latest views adopt the margin without changing their zoom.
+        auto legacy = document;
+        legacy["first"] = double(bars.size()) - 100;
+        legacy["count"] = 100;
+        restore_view(restored, bars, legacy);
+        CHECK(near(latest_position(restored, bars.size()), .75) && restored.count == 100);
+        // Deliberate historical pans remain where the user left them on refresh/restart.
+        View historical{50.25, 100};
+        auto historical_document = encode_view(historical, bars);
+        CHECK(historical_document["follow"] == false);
+        restore_view(restored, extra, historical_document);
+        CHECK(restored.first == historical.first && restored.count == historical.count);
         auto grouped = aggregate(bars, 4);
         CHECK(grouped.size() == 100);
         CHECK(near(grouped[0].open, bars[0].open));
@@ -204,6 +232,22 @@ int main(int argc, char **argv) {
         auto fresh_quote = parse_quote(snapshot.dump(), "SPY");
         CHECK(fresh_quote.price == 105 && near(fresh_quote.change, 5) && fresh_quote.snapshot);
         CHECK(fresh_quote.asof == 1736294500);
+        auto extended_snapshot = snapshot;
+        auto &extended_result = extended_snapshot["chart"]["result"][0];
+        extended_result["meta"]["hasPrePostMarketData"] = true;
+        extended_result["meta"]["regularMarketChangePercent"] = -0.08;
+        extended_result["meta"]["currentTradingPeriod"] = {
+            {"pre", {{"start", 1736323200}, {"end", 1736346600}}},
+            {"post", {{"start", 1736370000}, {"end", 1736384400}}}};
+        extended_result["timestamp"] = {1736323200, 1736323260, 1736323320};
+        extended_result["indicators"]["quote"][0]["close"] = {106, 107, nullptr};
+        auto eq = parse_quote(extended_snapshot.dump(), "SPY");
+        CHECK(eq.change == -.08 && eq.price == 105);
+        CHECK(eq.extended && eq.extended->price == 107 && eq.extended->session == "Pre");
+        extended_result["timestamp"] = {1736370000, 1736370060, 1736370120};
+        CHECK(parse_quote(extended_snapshot.dump(), "SPY").extended->session == "Post");
+        extended_result["meta"]["regularMarketTime"] = 1736371000;
+        CHECK(!parse_quote(extended_snapshot.dump(), "SPY").extended);
         History intraday;
         intraday.interval = "1h";
         intraday.meta = snapshot["chart"]["result"][0]["meta"];
@@ -256,6 +300,118 @@ int main(int argc, char **argv) {
         auto normalized = normalize_crypto(crypto);
         CHECK(normalized.bars.size() == 1 && normalized.bars[0].close == 108 &&
               normalized.bars[0].volume == 100);
+        // Hand-calculated channels, oscillators and volume studies, including warmup and gaps.
+        std::vector<Bar> study = {{1, 10, 12, 8, 10, 100},
+                                  {2, 11, 14, 9, 12, 200},
+                                  {3, 12, 13, 10, 11, 300},
+                                  {4, 11, 16, 7, 15, 400},
+                                  {5, 15, 17, 13, 14, 500}};
+        auto dc = indicator("DONCHIAN");
+        dc.period = 3;
+        auto channel = calculate(dc, study);
+        CHECK(!channel.pane && std::isnan(channel.lines[0][1]));
+        CHECK(channel.lines[0][2] == 14 && channel.lines[1][2] == 8 && channel.lines[2][2] == 11);
+        CHECK(channel.lines[0][4] == 17 && channel.lines[1][4] == 7);
+        dc.exclude_current = true;
+        dc.midline = false;
+        auto prior = calculate(dc, study);
+        CHECK(prior.lines.size() == 2 && std::isnan(prior.lines[0][2]));
+        CHECK(prior.lines[0][3] == 14 && prior.lines[1][3] == 8);
+        CHECK(encode_indicator(decode_indicator(encode_indicator(dc))) == encode_indicator(dc));
+        auto stoch = indicator("STOCH");
+        stoch.period = 3;
+        stoch.slow = 1;
+        stoch.signal = 2;
+        auto stochastic = calculate(stoch, study);
+        CHECK(stochastic.pane && near(stochastic.lines[0][2], 50));
+        CHECK(near(stochastic.lines[0][3], 800. / 9));
+        CHECK(std::isnan(stochastic.lines[1][2]));
+        CHECK(near(stochastic.lines[1][3], (50 + 800. / 9) / 2));
+        auto roc = indicator("ROC");
+        roc.period = 2;
+        CHECK(near(calculate(roc, study).lines[0][2], 10));
+        CHECK(near(calculate(roc, study).lines[0][3], 25));
+        auto vwma = indicator("VWMA");
+        vwma.period = 2;
+        CHECK(near(calculate(vwma, study).lines[0][1], 3400. / 300));
+        auto no_volume = study;
+        no_volume[2].volume = missing;
+        auto weighted = calculate(vwma, no_volume);
+        CHECK(std::isnan(weighted.lines[0][2]) && std::isnan(weighted.lines[0][3]));
+        CHECK(near(weighted.lines[0][4], 13000. / 900));
+        no_volume[0].volume = no_volume[1].volume = 0;
+        CHECK(std::isnan(calculate(vwma, no_volume).lines[0][1]));
+        CHECK(calculate(indicator("OBV"), study).lines[0] == std::vector<double>({0, 200, -100, 300, -200}));
+        CHECK(std::isnan(calculate(indicator("OBV"), no_volume).lines[0][4]));
+        auto kc = indicator("KC");
+        kc.period = 2;
+        kc.slow = 2;
+        kc.deviation = 2;
+        auto keltner = calculate(kc, study);
+        CHECK(near(keltner.lines[0][1], 34. / 3));
+        CHECK(near(keltner.lines[1][1], 34. / 3 + 9));
+        CHECK(near(keltner.lines[2][1], 34. / 3 - 9));
+        // Appending future bars never changes an existing historical indicator value.
+        for (auto kind : kinds) {
+            if (std::string(kind) == "RIBBON" || std::string(kind) == "PIVOTS")
+                continue;
+            auto spec = indicator(kind);
+            spec.period = spec.slow = spec.signal = 2;
+            auto short_bars = study;
+            short_bars.pop_back();
+            auto before = calculate(spec, short_bars), after = calculate(spec, study);
+            for (size_t line = 0; line < before.lines.size(); ++line)
+                for (size_t i = 0; i < short_bars.size(); ++i)
+                    CHECK(std::isnan(before.lines[line][i])
+                              ? std::isnan(after.lines[line][i])
+                              : near(before.lines[line][i], after.lines[line][i]));
+            CHECK(encode_indicator(decode_indicator(encode_indicator(spec))) == encode_indicator(spec));
+        }
+        // Swing pivots intentionally use right-hand bars, but only after those bars close.
+        auto pivots = indicator("PIVOTS");
+        pivots.period = 2;
+        std::vector<Bar> swings;
+        const std::vector<double> highs = {10, 12, 18, 14, 13, 12, 14, 13, 11};
+        const std::vector<double> lows = {8, 9, 11, 10, 7, 4, 8, 9, 8};
+        for (size_t i = 0; i < highs.size(); ++i)
+            swings.push_back({1736121600 + Time(i) * 3600, 10, highs[i], lows[i], 10, 100});
+        Time close4 = swings[4].time + 3600;
+        auto before_close = calculate(pivots, swings, 0, nullptr, nullptr, close4 - 1);
+        CHECK(std::isnan(before_close.lines[0][2]));
+        auto after_close = calculate(pivots, swings, 0, nullptr, nullptr, close4);
+        CHECK(after_close.pivots && after_close.lines[0][2] == 18);
+        CHECK(std::isnan(after_close.lines[1][5]));
+        auto all_closed = calculate(pivots, swings, 0, nullptr, nullptr, swings.back().time + 3600);
+        CHECK(all_closed.lines[1][5] == 4 && all_closed.lines[0][6] == 14);
+        for (int i : {0, 1, 7, 8})
+            CHECK(std::isnan(all_closed.lines[0][i]) && std::isnan(all_closed.lines[1][i]));
+        auto tied = swings;
+        tied[3].high = 18;
+        tied[6].low = 4;
+        CHECK(std::isnan(calculate(pivots, tied, 0).lines[0][2]));
+        CHECK(std::isnan(calculate(pivots, tied, 0).lines[1][5]));
+        auto only_five = swings;
+        only_five.resize(5);
+        CHECK(calculate(pivots, only_five, 0, nullptr, nullptr, close4).lines[0][2] == 18);
+        only_five.pop_back();
+        CHECK(std::isnan(calculate(pivots, only_five, 0).lines[0][2]));
+        History cached;
+        cached.bars = swings;
+        cached.bars.resize(5);
+        cached.fetched = close4 - 1;
+        // An old snapshot of an unfinished bar must not become confirmed just as time passes.
+        CHECK(std::isnan(calculate(pivots, cached.bars, 0, &cached, nullptr, close4 + 3600).lines[0][2]));
+        cached.fetched = close4;
+        CHECK(calculate(pivots, cached.bars, 0, &cached, nullptr, close4).lines[0][2] == 18);
+        // A shortened last session bar closes at the provider's actual session boundary.
+        cached.meta["currentTradingPeriod"]["regular"] = {{"start", swings[4].time}, {"end", close4 - 1800}};
+        cached.fetched = close4 - 1800;
+        CHECK(calculate(pivots, cached.bars, 0, &cached, nullptr, close4 - 1800).lines[0][2] == 18);
+        pivots.show_highs = false;
+        pivots.low_color = rgba(1, 2, 3);
+        auto lows_only = calculate(pivots, swings, 0);
+        CHECK(std::isnan(lows_only.lines[0][2]) && lows_only.lines[1][5] == 4);
+        CHECK(encode_indicator(decode_indicator(encode_indicator(pivots))) == encode_indicator(pivots));
         if (argc > 1) {
             std::ifstream f(argv[1]);
             auto vectors = Json::parse(f);

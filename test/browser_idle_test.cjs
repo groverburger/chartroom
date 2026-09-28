@@ -56,7 +56,7 @@ const assert = require('node:assert/strict');
     await page.waitForTimeout(150);
     assert((await stats()).frames>after.frames,'Mouse movement wakes rendering');
     // Open a text field: cursor blinks at timer deadlines, not at display refresh rate.
-    await page.mouse.click(90,304);
+    await page.mouse.click(90,165);
     await page.keyboard.type('QQQ');
     await page.waitForTimeout(400);
     before=await stats();

@@ -1,4 +1,5 @@
 #include "drawings.hpp"
+#include <chrono>
 #include <stdexcept>
 namespace cr {
 double drawing_index(const std::vector<Bar> &bars, Time t, Time step) {
@@ -24,6 +25,111 @@ Time drawing_time(const std::vector<Bar> &bars, double index, Time step) {
         return bars.back().time + Time(std::llround((index - double(bars.size() - 1)) * step));
     size_t i = size_t(std::floor(index));
     return bars[i].time + Time(std::llround((index - double(i)) * double(bars[i + 1].time - bars[i].time)));
+}
+std::vector<TimeTick> time_grid(const std::vector<Bar> &bars, const View &view, Time step, double pixels,
+                                bool local) {
+    using namespace std::chrono;
+    if (bars.empty() || view.count <= 0 || pixels < 1 || !std::isfinite(view.first) ||
+        !std::isfinite(view.count) || std::abs(view.first) > 1e8 || view.count > 1e8)
+        return {};
+    auto start = drawing_time(bars, view.first - .5, step);
+    auto end = drawing_time(bars, view.first + view.count - .5, step);
+    if (local) {
+        start = local_wall(start);
+        end = local_wall(end);
+    }
+    // Stay within the calendar and timestamp ranges supported by all platforms.
+    if (start < -11676096000LL || end > 253402214400LL)
+        return {};
+    struct Interval {
+        int unit, count;
+    }; // hours, days, weeks, months, years
+    const Interval choices[] = {{0, 1},  {0, 3},  {0, 6},  {0, 12},  {1, 1},   {2, 1},
+                                {3, 1},  {3, 3},  {3, 6},  {4, 1},   {4, 2},   {4, 5},
+                                {4, 10}, {4, 20}, {4, 50}, {4, 100}, {4, 500}, {4, 1000}};
+    for (auto choice : choices) {
+        if (choice.unit == 0 && step >= 86400)
+            continue;
+        auto day = floor<days>(sys_seconds{seconds{start}});
+        year_month_day ymd{day};
+        sys_seconds tick;
+        if (choice.unit == 0) {
+            auto hours_since = duration_cast<hours>(sys_seconds{seconds{start}} - sys_seconds{day}).count();
+            tick = sys_seconds{day} + hours{hours_since / choice.count * choice.count};
+        } else if (choice.unit == 1) {
+            tick = day;
+        } else if (choice.unit == 2) {
+            tick = day - days{weekday{day}.iso_encoding() - 1}; // Monday
+        } else if (choice.unit == 3) {
+            tick = sys_days{ymd.year() /
+                            month{(unsigned(ymd.month()) - 1) / choice.count * choice.count + 1} / 1};
+        } else {
+            tick = sys_days{year{int(ymd.year()) / choice.count * choice.count} / January / 1};
+        }
+        auto advance = [&] {
+            if (choice.unit == 0)
+                tick += hours{choice.count};
+            else if (choice.unit == 1)
+                tick += days{choice.count};
+            else if (choice.unit == 2)
+                tick += days{7 * choice.count};
+            else {
+                year_month_day d{floor<days>(tick)};
+                if (choice.unit == 3)
+                    d += months{choice.count};
+                else
+                    d += years{choice.count};
+                tick = sys_days{d};
+            }
+        };
+        while (tick.time_since_epoch().count() < start)
+            advance();
+        std::vector<TimeTick> ticks;
+        bool crowded = false;
+        double last_pixel = -1e9;
+        size_t budget = size_t(std::max(2., pixels / 80 + 2));
+        // Bound work even at extreme zoom; coarser intervals are tried next.
+        for (int attempts = 0; tick.time_since_epoch().count() <= end; advance()) {
+            if (++attempts > 2000) {
+                crowded = true;
+                break;
+            }
+            Time wall = tick.time_since_epoch().count();
+            Time t = local ? local_instant(wall) : wall;
+            if (local && local_wall(t) != wall)
+                continue; // Spring-forward clock gap.
+            if (!ticks.empty() && t <= ticks.back().time)
+                continue;
+            double index = drawing_index(bars, t, step);
+            // A session/calendar boundary belongs to the first available bar after it.
+            // Missing sessions never produce multiple ticks at that bar.
+            if (t >= bars.front().time && t <= bars.back().time) {
+                auto it = std::lower_bound(bars.begin(), bars.end(), t,
+                                           [](const Bar &b, Time value) { return b.time < value; });
+                index = double(it - bars.begin());
+            }
+            double pixel = (index - view.first + .5) / view.count * pixels;
+            if (pixel < 0 || pixel > pixels || (!ticks.empty() && index == ticks.back().index))
+                continue;
+            year_month_day d{floor<days>(tick)};
+            bool year_start = d.month() == January && d.day() == std::chrono::day{1};
+            bool midnight = tick == floor<days>(tick);
+            const char *format = choice.unit == 4 || (year_start && midnight) ? "%Y"
+                                 : choice.unit == 3                           ? "%B"
+                                 : choice.unit == 0 && !midnight              ? "%H:%M"
+                                                                              : "%b %d";
+            bool major = (year_start && midnight) || (d.day() == std::chrono::day{1} && midnight);
+            ticks.push_back({t, index, date(wall, format), major});
+            if (pixel - last_pixel < 90 || ticks.size() > budget) {
+                crowded = true;
+                break;
+            }
+            last_pixel = pixel;
+        }
+        if (!crowded)
+            return ticks;
+    }
+    return {};
 }
 Measurement measure(const Anchor &a, const Anchor &b, const std::vector<Bar> &bars, Time step) {
     return {b.price - a.price, a.price == 0 ? missing : (b.price - a.price) / std::abs(a.price) * 100,

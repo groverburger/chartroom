@@ -55,10 +55,10 @@ const fixture=name=>JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures',na
   assert.equal(h.meta.chartroomSource,'Nasdaq + Yahoo latest session');
   assert.equal(h.bars.length,5);assert.equal(h.bars.at(-1)[4],768);
   await page.waitForTimeout(600);
-  // Market -> Options, without disturbing the chart layout.
-  await page.mouse.click(155,70);await page.waitForTimeout(100);
+  // Add panel -> Options, without disturbing the chart layout.
+  await page.mouse.click(320,12);await page.waitForTimeout(100);
   await page.screenshot({path:'/private/tmp/chartroom-market-menu.png'});
-  await page.mouse.click(176,96);
+  await page.mouse.click(322,65);
   await page.waitForTimeout(500);
   await page.screenshot({path:'/private/tmp/chartroom-market-click.png'});
   await exists('/data/cache/535059.options-2026-09-23.json');
@@ -71,12 +71,12 @@ const fixture=name=>JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures',na
   await page.screenshot({path:'/private/tmp/chartroom-options.png'});
   const chainCalls=()=>optionCalls.filter(c=>c.from&&c.from===c.to);
   const initialCalls=chainCalls().length;
-  await page.mouse.click(532,242); // Puts toggle.
+  await page.mouse.click(532,254); // Puts toggle.
   await page.waitForTimeout(1200);
   assert.equal((await state()).options.puts,true);
   assert.equal(chainCalls().length,initialCalls,'Changing side reuses the same expiry snapshot');
   await page.screenshot({path:'/private/tmp/chartroom-options-puts.png'});
-  await page.mouse.click(298,242); // Single expiry picker.
+  await page.mouse.click(298,254); // Single expiry picker.
   await page.waitForFunction(()=>JSON.parse(FS.readFile('/data/cache/535059.option-dates.json',{encoding:'utf8'})).complete);
   await page.keyboard.press('ArrowDown');await page.keyboard.press('Enter');
   await exists('/data/cache/535059.options-2026-10-16.json');
@@ -84,7 +84,7 @@ const fixture=name=>JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures',na
   assert.equal((await state()).options.expiry,'2026-10-16');
   assert.equal(chainCalls().length,initialCalls+2,'Only the selected expiry is paginated');
   const beforeBack=optionCalls.length;
-  await page.mouse.click(298,242);await page.keyboard.press('Home');await page.keyboard.press('Enter');
+  await page.mouse.click(298,254);await page.keyboard.press('Home');await page.keyboard.press('Enter');
   await page.waitForTimeout(1200);
   assert.equal((await state()).options.expiry,'2026-09-23');
   assert.equal(optionCalls.length,beforeBack,'Returning to a fresh cached expiry makes no request');
@@ -92,7 +92,41 @@ const fixture=name=>JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures',na
   assert.equal((await state()).options.puts,true);
   assert.equal((await state()).options.expiry,'2026-09-23');
   assert.equal(optionCalls.length,beforeBack,'Fresh chains and date catalog survive reload');
+  // Hover is transient; clicking pins the exact expiry/strike without changing the view.
+  const view=(await state()).charts[0].view;
+  await page.mouse.move(280,446);await page.waitForTimeout(1200);
+  assert.equal((await state()).charts[0].option_marker,null);
+  await page.mouse.click(280,446);await page.mouse.move(1300,100);await page.waitForTimeout(1200);
+  const marker={expiry:'2026-09-23',strike:770,puts:true};
+  assert.deepEqual((await state()).charts[0].option_marker,marker);
+  assert.deepEqual((await state()).charts[0].view,view);
+  await page.mouse.click(555,284);await page.waitForTimeout(1200);
+  assert.equal((await state()).charts[0].option_ladder,true);
+  await page.mouse.click(1204,189);await page.waitForTimeout(1200);
+  assert.equal((await state()).options.open,false);
+  await page.screenshot({path:'/private/tmp/chartroom-option-marker.png'});
+  const ladderRequests=chainCalls().length;
+  await page.clock.fastForward(65000);await page.waitForTimeout(500);
+  assert(chainCalls().length>ladderRequests,'Visible ladder refreshes with Options closed');
+  await page.reload();await exists('/data/workspace.json');await page.waitForTimeout(1200);
+  assert.deepEqual((await state()).charts[0].option_marker,marker);
+  assert.equal((await state()).charts[0].option_ladder,true);
+  // Unified Add panel, close Chart 1, then restore it across a restart.
+  await page.mouse.click(300,12);await page.waitForTimeout(100);await page.mouse.click(290,43);
+  await page.waitForTimeout(1200);assert.equal((await state()).charts.length,2);
+  await page.mouse.click(450,550); // Select the first chart.
+  await page.mouse.click(110,12);await page.waitForTimeout(100);
+  await page.screenshot({path:'/private/tmp/chartroom-panels-menu.png'});
+  await page.mouse.click(180,86);await page.waitForTimeout(1200);
+  assert.equal((await state()).charts.length,1);
+  assert.equal((await state()).recently_closed[0].id,1);
+  await page.reload();await exists('/data/workspace.json');await page.waitForTimeout(1000);
+  await page.keyboard.press('Control+Shift+T');await page.waitForTimeout(1200);
+  const restored=await state();
+  assert.equal(restored.charts.length,2);assert.equal(restored.recently_closed.length,0);
+  assert.deepEqual(restored.charts.find(c=>c.id===1).option_marker,marker);
+  await page.screenshot({path:'/private/tmp/chartroom-restored.png'});
   assert.deepEqual(errors,[]);
-  console.log('Lazy single-expiry requests, calls/puts toggle without fetching, expiry switching, cache reuse and persistence passed');
+  console.log('Lazy options, cached expiries, preview/pin persistence, ladder refresh, Add panel and closed-chart recovery passed');
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1);});

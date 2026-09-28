@@ -31,7 +31,6 @@
 #include <thread>
 #endif
 struct Application;
-static Application *application_for_refresh = nullptr;
 struct Application {
     GLFWwindow *window = nullptr;
     std::unique_ptr<cr::State> state;
@@ -85,21 +84,6 @@ struct Application {
                 file.write(reinterpret_cast<char *>(pixels.data() + size_t(y) * w * 3), w * 3);
         }
         glfwSwapBuffers(window);
-#ifndef __EMSCRIPTEN__
-        if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
-            auto *context = glfwGetCurrentContext();
-            ImGui::UpdatePlatformWindows();
-            for (auto *viewport : ImGui::GetPlatformIO().Viewports)
-                if (viewport->ID != ImGui::GetMainViewport()->ID && viewport->PlatformHandle)
-                    glfwSetWindowRefreshCallback(
-                        static_cast<GLFWwindow *>(viewport->PlatformHandle), +[](GLFWwindow *) {
-                            if (application_for_refresh)
-                                application_for_refresh->invalidated = true;
-                        });
-            ImGui::RenderPlatformWindowsDefault();
-            glfwMakeContextCurrent(context);
-        }
-#endif
         ++frames;
         if (max_frames > 0 && frames >= max_frames)
             glfwSetWindowShouldClose(window, true);
@@ -108,13 +92,7 @@ struct Application {
 #ifdef __EMSCRIPTEN__
         return !EM_ASM_INT({ return document.hidden; });
 #else
-        if (max_frames > 0 || !glfwGetWindowAttrib(window, GLFW_ICONIFIED))
-            return true;
-        for (auto *viewport : ImGui::GetPlatformIO().Viewports)
-            if (viewport->ID != ImGui::GetMainViewport()->ID &&
-                !(viewport->Flags & ImGuiViewportFlags_IsMinimized))
-                return true;
-        return false;
+        return max_frames > 0 || !glfwGetWindowAttrib(window, GLFW_ICONIFIED);
 #endif
     }
     double pump(bool input = false) {
@@ -124,9 +102,6 @@ struct Application {
         input |= !g.InputEventsQueue.empty();
         bool changed = state->tick();
 #ifndef __EMSCRIPTEN__
-        for (auto *viewport : ImGui::GetPlatformIO().Viewports)
-            invalidated |= viewport->PlatformRequestClose || viewport->PlatformRequestMove ||
-                           viewport->PlatformRequestResize;
         if (cr::now() >= build_next) {
             build_next = cr::now() + 60;
             try {
@@ -244,7 +219,8 @@ int main(int argc, char **argv) {
                 fetch_only = true;
                 symbol = cr::normalize_symbol(value());
             } else if (arg == "--version") {
-                std::cout << "Chartroom " << cr::build::version << " (" << cr::build::timestamp << ")\n";
+                std::cout << "Chartroom " << cr::build::version << " ("
+                          << cr::local_date(cr::parse_time(cr::build::timestamp)) << ")\n";
                 return 0;
             } else if (arg == "--help") {
                 std::cout
@@ -273,8 +249,9 @@ int main(int argc, char **argv) {
                     if (!e.error.empty())
                         throw std::runtime_error(e.error);
                     std::cout << symbol << " / " << cr::data_source(e.history) << " / "
-                              << e.history.bars.size() << " bars / " << cr::date(e.history.bars.back().time)
-                              << " / close " << e.history.bars.back().close << "\n";
+                              << e.history.bars.size() << " bars / "
+                              << cr::local_date(e.history.bars.back().time) << " / close "
+                              << e.history.bars.back().close << "\n";
                     return 0;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(25));
@@ -305,7 +282,6 @@ int main(int argc, char **argv) {
         if (hidden)
             glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
         auto app = std::make_unique<Application>();
-        application_for_refresh = app.get();
 #ifndef __EMSCRIPTEN__
         std::filesystem::path executable = std::filesystem::absolute(argv[0]);
 #ifdef __APPLE__
@@ -346,9 +322,7 @@ int main(int argc, char **argv) {
         ImGui::CreateContext();
         auto &io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_DockingEnable;
-#ifndef __EMSCRIPTEN__
-        io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable;
-#endif
+        // Keep floating panels inside the main OS window, including in macOS fullscreen.
         io.IniFilename = nullptr;
         io.ConfigWindowsMoveFromTitleBarOnly = true;
         ImFontConfig font;
@@ -445,7 +419,6 @@ int main(int argc, char **argv) {
         ImGui_ImplOpenGL3_Shutdown();
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
-        application_for_refresh = nullptr;
         glfwDestroyWindow(app->window);
         glfwTerminate();
         if (smoke && bars == 0)

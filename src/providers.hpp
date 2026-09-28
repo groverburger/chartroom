@@ -13,6 +13,7 @@ class Providers {
     void quote(std::string symbol, QuoteCallback);
     void options(std::string symbol, std::string expiry, OptionsCallback);
     void option_dates(std::string symbol, bool full, std::function<void(OptionDates, std::string)>);
+    void fundamentals(std::string symbol, std::function<void(Json, std::string)>);
     void screen(ScreenQuery, std::function<void(ScreenResult, std::string)>);
 
   private:

@@ -26,7 +26,7 @@ const assert = require('node:assert/strict');
     const running=await page.evaluate(()=>({number:Module.chartroomBuild,version:Module.chartroomVersion}));
     assert.equal(running.number,manifest.build_number);
     assert.equal(running.version,manifest.version);
-    await page.mouse.click(482,76); // Persist an open tools window before using Reload.
+    await page.mouse.click(482,102); // Persist an open tools window before using Reload.
     await page.waitForTimeout(300);
     await page.mouse.move(700,700);
     await page.clock.fastForward(6500);
@@ -43,7 +43,7 @@ const assert = require('node:assert/strict');
     await page.screenshot({path:require('node:path').join(require('node:os').tmpdir(),'chartroom-build-update.png')});
     // Version text is followed by Reload. Clicking must sync IndexedDB before navigation.
     const navigated=page.waitForEvent('framenavigated', f=>f===page.mainFrame());
-    await page.mouse.click(89,42);
+    await page.mouse.click(89,68);
     await navigated;
     await page.waitForFunction(()=>typeof FS!=='undefined' && FS.analyzePath('/data/workspace.json').exists && Module.chartroomStats?.frames>=3);
     assert.equal((await state()).drawing_tools_open,true,'Reload preserves the saved workspace');
