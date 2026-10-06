@@ -32,7 +32,8 @@ jobs:
           Copy-Item build/Release/chartroom.exe "$dir/Chartroom.exe"
           Copy-Item build/Release/build-info.json $dir
           Copy-Item THIRD_PARTY_NOTICES.md "$dir/licenses/"
-          Copy-Item assets/Roboto-LICENSE.txt, vendor/imgui/LICENSE.txt, vendor/OpenTerminal-LICENSE.txt "$dir/licenses/"
+          Copy-Item assets/Roboto-LICENSE.txt, vendor/OpenTerminal-LICENSE.txt "$dir/licenses/"
+          Copy-Item vendor/imgui/LICENSE.txt "$dir/licenses/imgui-LICENSE.txt"
           Copy-Item vendor/glfw/LICENSE.md "$dir/licenses/GLFW-LICENSE.md"
           Copy-Item vendor/json/LICENSE.MIT "$dir/licenses/json-LICENSE.MIT"
           Compress-Archive -Path $dir -DestinationPath "dist/$name.zip"
