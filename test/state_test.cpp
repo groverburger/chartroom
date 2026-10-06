@@ -190,7 +190,7 @@ int main() {
             CHECK(!s.drawings.can_undo());
             CHECK(s.current().indicators[0].timeframe == 4);
             auto &p = s.current();
-            s.select(p, "BTC", 2);
+            s.select(p, resolve_symbol("BTC"), 2);
             s.tick();
             CHECK(p.bars.empty());
             CHECK(p.symbol == "BTC-USD");
@@ -254,7 +254,7 @@ int main() {
             s.remove_closed();
             CHECK(s.panels.size() == 1 && s.current().open);
             s.current().option_marker = OptionMarker{"2026-10-16", 135, true};
-            s.select(s.current(), "BTC", 2);
+            s.select(s.current(), resolve_symbol("BTC"), 2);
             CHECK(!s.current().option_marker);
         }
         // Migrate a legacy singleton sidebar, preserving user lists and edits.
@@ -298,6 +298,66 @@ int main() {
             CHECK(s.watchlists.empty()); // Closing all windows is persistent, not a special case.
             CHECK(int(s.lists.size()) == deleted_size); // Deleted starters must not reappear.
             CHECK(s.add_watchlist(favorite_index).id > 3);
+            auto sp500 = std::find_if(s.lists.begin(), s.lists.end(), [](auto &l) { return l.source == "sp500"; });
+            CHECK(sp500 != s.lists.end() && sp500->symbols.size() > 400);
+            CHECK(std::count(sp500->symbols.begin(), sp500->symbols.end(), "ES")); // Eversource, not futures.
+            sp500->symbols = {"AAPL", "ES"};
+            sp500->asof = "2026-09-30";
+            s.save(true);
+        }
+        {
+            // Live lists persist their source and last fetched members.
+            State s(watch_dir, true);
+            auto sp500 = std::find_if(s.lists.begin(), s.lists.end(), [](auto &l) { return l.source == "sp500"; });
+            CHECK(sp500->symbols == std::vector<std::string>({"AAPL", "ES"}) && sp500->asof == "2026-09-30");
+        }
+        {
+            // Catalog 1 workspaces gain only the live lists; their deleted starters stay deleted.
+            auto doc = read_json(watch_dir / "workspace.json");
+            doc["watchlist_catalog"] = 1;
+            Json kept = Json::array();
+            for (auto &l : doc["lists"])
+                if (!l.contains("source"))
+                    kept.push_back(l);
+            doc["lists"] = kept;
+            atomic_json(watch_dir / "workspace.json", doc);
+            State s(watch_dir, true);
+            CHECK(int(s.lists.size()) == deleted_size && s.watchlist_catalog == 2);
+            CHECK(std::count_if(s.lists.begin(), s.lists.end(), [](auto &l) { return !l.source.empty(); }) == 2);
+        }
+        {
+            // Expression charts derive from their legs' caches and persist like any symbol.
+            auto expr_dir = directory / "expression";
+            for (auto [symbol, close] : {std::pair{"RSP", 50.}, {"SPY", 200.}}) {
+                History leg{symbol, "1d"};
+                leg.fetched = now();
+                for (int day = 0; day < 30; ++day)
+                    leg.bars.push_back({Time(day) * 86400 + 48600, close + day, close + day + 1, close + day - 1, close + day, 1e6});
+                atomic_json(cache_path(expr_dir, symbol, "1d"), encode_history(leg));
+            }
+            {
+                State s(expr_dir, true);
+                s.select(s.current(), resolve_symbol("rsp / spy"), 2);
+                CHECK(s.current().symbol == "RSP/SPY");
+                auto &e = s.ensure("RSP/SPY", 2);
+                CHECK(e.loaded && e.history.bars.size() == 30 && !e.loading);
+                CHECK(std::abs(e.history.bars.back().close - 79. / 229) < 1e-12);
+                s.tick();
+                CHECK(s.current().bars.size() == 30);
+                s.current().point_figure = true;
+                s.current().pnf = {false, 1, .01, 2, true};
+                s.current().dirty = true;
+                s.tick();
+                CHECK(!s.current().pnf_chart.columns.empty() && s.current().pnf_chart.step == .01);
+                s.save(true);
+            }
+            State s(expr_dir, true);
+            CHECK(s.current().symbol == "RSP/SPY");
+            // Point and figure style and settings survive a restart.
+            CHECK(s.current().point_figure && !s.current().pnf.logarithmic && s.current().pnf.reversal == 2);
+            s.tick();
+            CHECK(s.current().bars.size() == 30 && std::isnan(s.current().bars.back().volume));
+            CHECK(s.profile("RSP/SPY").data.type == "Computed from tickers");
         }
         auto julia = directory / "julia";
         auto imported = directory / "imported";

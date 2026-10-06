@@ -9,13 +9,16 @@ This repository contains the C++20 application, which runs on desktop and in the
 ## Features
 
 - **Multiple charts:** independent symbols, timeframes, and indicators, with grid, column, row, and tabbed layouts.
+- **Symbol arithmetic:** chart or watch ratios and spreads such as `RSP/SPY`, `(AAPL+MSFT)/2`, or `SPY - QQQ` (spaces around minus, since tickers like `BTC-USD` contain dashes). Bars are matched by date; volume is not shown.
 - **Interactive navigation:** pan through history, zoom around the cursor, and inspect prices with a crosshair that snaps to bars. The price axis automatically fits visible data.
 - **Chart styles:** candlesticks, OHLC bars, or a line chart, with volume and round-number price levels.
+- **Point and figure:** logarithmic (percent) or arithmetic (price, with the traditional box scale as the default) boxes, any reversal, high/low or close-only. Month markers, shaded double-top and double-bottom breakouts, and a tooltip naming the bar that filled each box. Choose it under **View → Chart style**.
 - **Drawings and measurement:** a dockable tools window with saved horizontal levels, trendlines, rays, rectangles, text notes, and Fibonacci retracements, with locking and undo/redo. Shift-drag to measure price changes and elapsed time.
-- **Technical indicators:** SMA, EMA, VWMA, Bollinger Bands, Donchian and Keltner channels, swing pivots, RSI, Stochastic, MACD, ATR, rate of change, on-balance volume, and an MA ribbon with trend-colored bars.
+- **Technical indicators:** SMA, EMA, VWMA, Bollinger Bands, Donchian and Keltner channels, swing pivots, RSI, Stochastic, MACD, ATR, rate of change, on-balance volume, the open8585 accumulation/distribution rating (A+ to E on daily charts), and an MA ribbon with trend-colored bars.
 - **Options chains:** Nasdaq calls and puts by expiry, with bid/ask, last price, volume, open interest, and in-the-money shading.
 - **Stock screener:** largest companies, gainers, losers, and most active US stocks, with price, capitalization, volume, and sector filters.
-- **Watchlists:** open several independent windows, edit your At a glance favorites, and explore starter lists across assets, sectors, and company groups. Create your own lists too.
+- **Watchlists:** open several independent windows, edit your At a glance favorites, and explore starter lists across assets, sectors, and company groups. Live lists track the S&P 500 constituents and the published [open8585](https://groverburger.github.io/open8585/) 85-85 list, refreshing hourly while open. Hover a ticker for its full name and sector (or fund, index, and futures type). Create your own lists too.
+- **Clear refresh state:** a chart refreshing old cached data shows a corner badge; a manual Refresh covers the chart with a spinner until new data arrives.
 - **Event-driven rendering:** redraws for input, data changes, and UI timers, then sleeps when idle. Minimized windows and hidden browser tabs skip rendering.
 - **Saved workspaces:** charts, indicators, colors, layouts, watchlists, and chart positions persist between sessions. Cached history is available offline.
 
@@ -49,6 +52,8 @@ cmake --build build --config Release --parallel
 ```
 
 When distributing a Windows build, include the dependency DLLs copied beside the executable and the third-party license notices.
+
+The app icon's master artwork is `assets/icon/chartroom.svg`. After editing it, run `python3 scripts/make_icons.py` (needs `rsvg-convert` and Pillow; the macOS `.icns` also needs `iconutil`) to regenerate the macOS, Windows, window and browser icons.
 
 ### Linux
 
@@ -85,7 +90,7 @@ The preview server serves the application and proxies a fixed set of provider ro
 
 ### Charts and navigation
 
-Click a chart to select it, then click a symbol in the sidebar to change its symbol. To load a symbol without adding it to a watchlist, type it into **Go to symbol** above the sidebar tickers and press **Enter** or **Go**. Ctrl-click or Cmd-click a symbol to open another chart. Use **+ Add panel** to open a chart, watchlist, options chain, or screener. The **Panels** menu lists open windows and offers duplication and closing; **Layout** arranges charts, and dragging tabs docks them.
+Click a chart to select it, then click a symbol in the sidebar to change its symbol. To load a symbol without adding it to a watchlist, click the symbol name at the top left of a chart, type a ticker, and press **Enter**. Ctrl-click or Cmd-click a symbol to open another chart. Use **+ Add panel** to open a chart, watchlist, options chain, or screener. The **Panels** menu lists open windows and offers duplication and closing; **Layout** arranges charts, and dragging tabs docks them.
 
 Restore a closed chart through **Panels → Reopen closed chart**, **Recently closed**, or **Ctrl/Cmd+Shift+T**. The last 20 closed charts retain their symbols, views, indicators, and settings across restarts. Chartroom keeps at least one chart open. **Workspace → Save workspace** saves immediately; changes also save automatically.
 
@@ -200,7 +205,7 @@ Chartroom uses the public endpoints identified in [OpenTerminal](https://github.
 
 | Data | Provider behavior |
 | --- | --- |
-| US stock/ETF daily history | Nasdaq chart OHLC, supplemented with later Yahoo daily sessions so an active candle can update; Yahoo fallback, then Stooq end-of-day CSV |
+| US stock/ETF daily history | Yahoo chart OHLC (two years first, then the full history in the background); Nasdaq daily chart fallback, then Stooq end-of-day CSV |
 | US stock/ETF sidebar quotes | Nasdaq quote info, falling back to Yahoo minute metadata |
 | Company facts, earnings dates and EPS | Nasdaq summary, profile, earnings surprise and earnings calendar |
 | Hourly/weekly history, futures, indices, USD crypto composites | Yahoo chart endpoint |
@@ -210,7 +215,7 @@ Chartroom uses the public endpoints identified in [OpenTerminal](https://github.
 
 The chart status identifies the actual provider and quote currency. `BTC`, `ETH`, and `SOL` retain their Yahoo USD composites. Binance pairs must be entered explicitly: USDT prices are not silently substituted for USD prices, and their sidebar percentages represent a rolling 24-hour change. Binance currently loads up to 1,000 candles per interval and accumulates updates in its cache. Access depends on region; if Binance is unavailable, use a USD composite for a separate chart.
 
-Supported timeframes are 1h, 4h, 1D, and 1W. Yahoo hourly requests cover up to 729 days; other history is limited to what the provider returns. Four-hour candles are aggregated in UTC buckets. Provider changes replace the cached series instead of mixing historical price adjustments. Nasdaq daily candles represent completed sessions; if the Yahoo supplement fails, a provider notice identifies the missing current-session update. Line-only responses are never turned into artificial OHLC candles.
+Supported timeframes are 1h, 4h, 1D, and 1W. Yahoo hourly requests cover up to 729 days; other history is limited to what the provider returns. Four-hour candles are aggregated in UTC buckets. Provider changes replace the cached series instead of mixing historical price adjustments. Nasdaq fallback candles represent completed sessions only, and a provider notice says so. Chart history requests go ahead of queued quote and fundamentals requests, and earnings data loads once the chart is shown. Line-only responses are never turned into artificial OHLC candles.
 
 Open charts and custom indicator source series refresh approximately every 60 seconds. Charts positioned at the latest candle follow new bars; historical views retain their position. Downloads run asynchronously. An empty chart shows a centered loading state; failed initial downloads offer **Retry**. The loading illustration is static to preserve idle rendering. A failed refresh retains cached data and retries later.
 

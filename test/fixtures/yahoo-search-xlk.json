@@ -1,0 +1,19 @@
+{
+ "quotes": [
+  {
+   "exchange": "PCX",
+   "shortname": "State Street Technology Select ",
+   "quoteType": "ETF",
+   "symbol": "XLK",
+   "typeDisp": "ETF",
+   "longname": "State Street Technology Select Sector SPDR ETF"
+  },
+  {
+   "exchange": "PCX",
+   "shortname": "State Street Technology Select ",
+   "quoteType": "EQUITY",
+   "symbol": "XLKI",
+   "typeDisp": "Equity"
+  }
+ ]
+}

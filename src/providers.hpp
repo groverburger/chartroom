@@ -21,6 +21,7 @@ class Providers {
     std::map<std::string, Time> retry;
     void yahoo(std::string symbol, std::string interval, Time start, std::string previous_source,
                HistoryCallback);
+    void nasdaq(std::string symbol, std::string problem, HistoryCallback);
     void options_page(std::string url, int offset, std::shared_ptr<OptionChain>, OptionsCallback);
 };
 } // namespace cr

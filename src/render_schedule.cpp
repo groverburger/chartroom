@@ -5,11 +5,18 @@
 #include <cmath>
 #include <limits>
 namespace cr {
+static double requested = std::numeric_limits<double>::infinity();
+void request_frame(double seconds) {
+    requested = std::min(requested, seconds);
+}
 double next_ui_frame() {
     auto &g = *ImGui::GetCurrentContext();
     auto &io = g.IO;
     double next = std::numeric_limits<double>::infinity();
     auto deadline = [&](double delay) { next = std::min(next, std::max(.001, delay)); };
+    if (std::isfinite(requested))
+        deadline(requested);
+    requested = std::numeric_limits<double>::infinity();
     if (!g.InputEventsQueue.empty())
         deadline(1. / 60.);
     // Held buttons/keys need drag, auto-scroll and repeat processing. A focused

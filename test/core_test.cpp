@@ -32,8 +32,43 @@ int main(int argc, char **argv) {
             auto shifted = scroll.update(0, -1, true, 1.56);
             CHECK(shifted.pan == -1 && shifted.zoom == 0);
         }
-        CHECK(normalize_symbol(" btc ") == "BTC-USD");
-        CHECK(normalize_symbol("es") == "ES=F");
+        CHECK(resolve_symbol(" btc ") == "BTC-USD");
+        CHECK(resolve_symbol("es") == "ES=F");
+        CHECK(normalize_symbol("es") == "ES" && normalize_symbol("CL") == "CL"); // Eversource, Colgate.
+        // Symbol arithmetic: canonical spelling, shorthands per leg, dashes inside tickers.
+        CHECK(normalize_symbol(" rsp / spy ") == "RSP/SPY" && is_expression("RSP/SPY"));
+        CHECK(normalize_symbol("( aapl + msft ) / 2") == "(AAPL+MSFT)/2");
+        CHECK(normalize_symbol("spy - qqq") == "SPY - QQQ" && normalize_symbol("SPY - QQQ") == "SPY - QQQ");
+        CHECK(normalize_symbol("BTC-USD") == "BTC-USD" && !is_expression("BTC-USD"));
+        CHECK(resolve_symbol("btc/eth") == "BTC-USD/ETH-USD" && display_symbol("BTC-USD/^VIX") == "BTC/VIX");
+        for (auto bad : {"SPY/", "(SPY/QQQ", "SPY QQQ", "2*3", "-SPY", "SPY/QQQ)", "A/B/C/D/E/F/G/H/I"}) {
+            bool threw = false;
+            try {
+                normalize_symbol(bad);
+            } catch (const std::exception &) {
+                threw = true;
+            }
+            CHECK(threw);
+        }
+        {
+            auto e = parse_expression("(AAPL+MSFT)/2 - SPY*0.5");
+            CHECK(e.symbols == std::vector<std::string>({"AAPL", "MSFT", "SPY"}));
+            CHECK(near(e.evaluate({{"AAPL", 10}, {"MSFT", 30}, {"SPY", 4}}), 18));
+            CHECK(std::isnan(parse_expression("SPY/QQQ").evaluate({{"SPY", 1}, {"QQQ", 0}})));
+            // Stocks open at 13:30 UTC and crypto at 00:00; both match on the UTC day. A day missing
+            // from either leg is skipped, and high/low widen to contain the computed open and close.
+            History stock{"SPY", "1d"}, coin{"BTC-USD", "1d"};
+            for (int day = 0; day < 4; ++day) {
+                stock.bars.push_back({day * 86400 + 48600, 100, 110, 90, 105, 1000});
+                if (day != 2)
+                    coin.bars.push_back({day * 86400, 50, 60, 40, 50, 10});
+            }
+            auto ratio = combine_expression("SPY/BTC-USD", {&stock, &coin});
+            CHECK(ratio.bars.size() == 3 && ratio.bars[2].time == 3 * 86400 + 48600);
+            CHECK(near(ratio.bars[0].open, 2) && near(ratio.bars[0].close, 2.1));
+            CHECK(near(ratio.bars[0].high, 90. / 40) && near(ratio.bars[0].low, 110. / 60));
+            CHECK(std::isnan(ratio.bars[0].volume) && ratio.symbol == "SPY/BTC-USD");
+        }
         CHECK(!valid({0, 10, 9, 8, 11, 0}));
         auto ribbon = calculate(indicator("RIBBON"), bars);
         CHECK(ribbon.lines.size() == 5);
@@ -66,6 +101,61 @@ int main(int argc, char **argv) {
         CHECK(decode_indicator(Json{{"kind", "RIBBON"}}).background);
         auto rsi = calculate(indicator("RSI"), bars);
         CHECK(rsi.lines[0].back() == 100);
+        // A/D parity with open8585/ratings.py _ad_raw_history on the same synthetic bars.
+        {
+            std::vector<Bar> ad_bars;
+            for (int i = 0; i < 160; ++i) {
+                double close = 100 + (i * 37 % 23) - 11 + i * .25;
+                ad_bars.push_back({Time(i) * 86400, close, close + 1 + (i % 5) * .5, close - 1 - (i % 3) * .5,
+                                   close, i == 90 ? missing : 1000. + (i * 7919 % 997)});
+            }
+            auto ad = ad_balance(ad_bars);
+            CHECK(std::isnan(ad[61]));
+            for (auto [i, expected] : {std::pair{62, -7.152176751632532},
+                                       {90, -25.566541328440934},
+                                       {100, -25.566541328440923},
+                                       {159, -4.837748858072912}})
+                CHECK(near(ad[size_t(i)], expected));
+            CHECK(std::string(ad_grade(ad[159])) == "C-" && std::string(ad_grade(-18.249625)) == "D");
+            CHECK(std::string(ad_grade(80)) == "A+" && std::string(ad_grade(-80)) == "E");
+            CHECK(calculate(indicator("AD"), ad_bars, 2).name == "A/D 20 / C-");
+            CHECK(calculate(indicator("AD"), ad_bars, 3).name == "A/D 20");
+        }
+        // Point and figure, worked by hand: $1 boxes, 3-box reversal, closes only.
+        {
+            auto closes = [](std::vector<double> prices) {
+                std::vector<Bar> out;
+                for (size_t i = 0; i < prices.size(); ++i)
+                    out.push_back({Time(i) * 86400, prices[i], prices[i], prices[i], prices[i], 1});
+                return out;
+            };
+            PnfSettings s{false, 1, 1, 3, true};
+            // 100 starts; rises to 104; 102 is no reversal; 100.9 reaches 101 = 104 - 3; 99.5 extends; 103 reverses.
+            auto c = point_and_figure(closes({100, 101.2, 103.5, 104, 102, 100.9, 99.5, 103}), s).columns;
+            CHECK(c.size() == 3);
+            CHECK(c[0].up && c[0].low == 100 && c[0].high == 104);
+            CHECK(!c[1].up && c[1].high == 103 && c[1].low == 100);
+            CHECK(c[2].up && c[2].low == 101 && c[2].high == 103 && !c[2].signal);
+            CHECK(c[0].bar(100) == 0 && c[0].bar(101) == 1 && c[0].bar(104) == 3);
+            CHECK(c[1].bar(103) == 5 && c[1].bar(100) == 6 && c[2].bar(103) == 7);
+            // A later X column above the prior X top is a double-top breakout.
+            c = point_and_figure(closes({100, 101.2, 103.5, 104, 100.9, 99.5, 103, 105.2}), s).columns;
+            CHECK(c.size() == 3 && c[2].high == 105 && c[2].signal == 1);
+            // High/low method: the high extends the X column before the low is considered.
+            std::vector<Bar> hl = {{0, 100, 100.5, 99.5, 100, 1}, {86400, 100, 102.4, 100, 102, 1},
+                                   {172800, 102, 102.2, 99.1, 99.5, 1}};
+            c = point_and_figure(hl, {false, 1, 1, 3, false}).columns;
+            CHECK(c.size() == 1 && c[0].high == 102); // A low of 99.1 reaches only row 100, not 102 - 3.
+            // Log rows pass through 100; touching a level fills its box despite floating-point error.
+            auto log_chart = point_and_figure(closes({100, 101, 102.01, 103.0301}), {true, 1, 0, 3, true});
+            CHECK(log_chart.columns.size() == 1 && log_chart.columns[0].high == 3);
+            CHECK(near(log_chart.price(3), 103.0301) && near(log_chart.row(100), 0));
+            CHECK(!point_and_figure(closes({10, -5, 12}), {true, 1, 0, 3, true}).error.empty());
+            CHECK(point_and_figure(closes({10, -5, 12}), {false, 1, 1, 3, true}).error.empty());
+            CHECK(point_and_figure(closes({150}), {false, 1, 0, 3, true}).step == 2); // Traditional box.
+            CHECK(pnf_traditional_box(50) == 1 && pnf_traditional_box(3) == .25 && pnf_traditional_box(30000) == 500);
+            CHECK(encode_pnf(decode_pnf(encode_pnf(s))) == encode_pnf(s) && decode_pnf(Json()).reversal == 3);
+        }
         auto sma = calculate(indicator("SMA"), bars);
         CHECK(std::isnan(sma.lines[0][18]));
         CHECK(near(sma.lines[0][19], 101.95));

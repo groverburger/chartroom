@@ -27,6 +27,15 @@ class ProxyTest(unittest.TestCase):
                 server.upstream('/nasdaq' + path + '?url=https://example.com')
         self.assertIn('/summary?', server.upstream('/nasdaq/api/quote/AAPL/summary?assetclass=stocks')[0])
 
+    def test_symbol_search(self):
+        url, _, body = server.upstream('/yahoo/v1/finance/search?q=%5EVIX&quotesCount=5&newsCount=0&listsCount=0')
+        self.assertEqual(url, 'https://query1.finance.yahoo.com/v1/finance/search?q=%5EVIX&quotesCount=5&newsCount=0&listsCount=0')
+        self.assertIsNone(body)
+        for query in ['q=AAPL&quotesCount=50&newsCount=0&listsCount=0', 'q=aapl%20news&quotesCount=5&newsCount=0&listsCount=0',
+                      'q=AAPL&quotesCount=5&newsCount=10&listsCount=0', 'q=AAPL']:
+            with self.subTest(query=query), self.assertRaises(ValueError):
+                server.upstream('/yahoo/v1/finance/search?' + query)
+
     def test_extended_quotes_only(self):
         route = '/yahoo/v8/finance/chart/SPY?period1=123&period2=456&includePrePost=true'
         self.assertIn('includePrePost=true', server.upstream(route + '&interval=1m')[0])

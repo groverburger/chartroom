@@ -64,10 +64,51 @@ fs::path cache_path(const fs::path &dir, const std::string &s, const std::string
     }
     return dir / "cache" / (name + "." + i + ".json");
 }
+// S&P 500 constituents as of 2026-09-21; the live list refreshes from live_list_url("sp500").
+static const std::vector<std::string> sp500_snapshot = {
+        "A", "AAPL", "ABBV", "ABNB", "ABT", "ACGL", "ACN", "ADBE", "ADI", "ADM", "ADP", "ADSK", "AEE", "AEP",
+        "AES", "AFL", "AIG", "AIZ", "AJG", "AKAM", "ALB", "ALGN", "ALL", "ALLE", "AMAT", "AMCR", "AMD", "AME",
+        "AMGN", "AMP", "AMT", "AMZN", "ANET", "AON", "AOS", "APA", "APD", "APH", "APO", "APP", "APTV", "ARE",
+        "ARES", "ATO", "AVGO", "AVY", "AWK", "AXON", "AXP", "AZO", "BA", "BAC", "BALL", "BAX", "BBY", "BDX",
+        "BE", "BEN", "BF-B", "BG", "BIIB", "BKNG", "BKR", "BLK", "BMY", "BNY", "BR", "BRK-B", "BRO", "BSX",
+        "BX", "BXP", "C", "CAH", "CARR", "CASY", "CAT", "CB", "CBOE", "CBRE", "CCI", "CCL", "CDNS", "CDW",
+        "CEG", "CF", "CFG", "CHD", "CHRW", "CHTR", "CI", "CIEN", "CINF", "CL", "CLX", "CMCSA", "CME", "CMG",
+        "CMI", "CMS", "CNC", "CNP", "COF", "COHR", "COIN", "COO", "COP", "COR", "COST", "CPAY", "CPRT", "CPT",
+        "CRH", "CRL", "CRM", "CRWD", "CSCO", "CSGP", "CSX", "CTAS", "CTSH", "CTVA", "CVNA", "CVS", "CVX", "D",
+        "DAL", "DASH", "DD", "DDOG", "DE", "DECK", "DELL", "DG", "DGX", "DHI", "DHR", "DIS", "DLR", "DLTR",
+        "DOC", "DOV", "DOW", "DPZ", "DRI", "DTE", "DUK", "DVA", "DVN", "DXCM", "EBAY", "ECHO", "ECL", "ED",
+        "EFX", "EG", "EIX", "EL", "ELV", "EME", "EMR", "EOG", "EQIX", "EQT", "ERIE", "ES", "ESS", "ETN", "ETR",
+        "EVRG", "EW", "EXC", "EXE", "EXPD", "EXPE", "EXR", "F", "FANG", "FAST", "FCX", "FDS", "FDX", "FDXF",
+        "FE", "FERG", "FFIV", "FICO", "FIS", "FISV", "FITB", "FIX", "FLEX", "FOX", "FOXA", "FRT", "FSLR",
+        "FTNT", "FTV", "GD", "GDDY", "GE", "GEHC", "GEN", "GEV", "GILD", "GIS", "GL", "GLW", "GM", "GNRC",
+        "GOOG", "GOOGL", "GPC", "GPN", "GRMN", "GS", "GWW", "HAL", "HAS", "HBAN", "HCA", "HD", "HIG", "HII",
+        "HLT", "HON", "HONA", "HOOD", "HPE", "HPQ", "HRL", "HSIC", "HST", "HSY", "HUBB", "HUM", "HWM", "IBKR",
+        "IBM", "ICE", "IDXX", "IEX", "IFF", "ILMN", "INCY", "INTC", "INTU", "INVH", "IP", "IQV", "IR", "IRM",
+        "ISRG", "IT", "ITW", "IVZ", "J", "JBHT", "JBL", "JCI", "JKHY", "JNJ", "JPM", "KDP", "KEY", "KEYS",
+        "KHC", "KIM", "KKR", "KLAC", "KMB", "KMI", "KO", "KR", "KVUE", "L", "LDOS", "LEN", "LH", "LHX", "LII",
+        "LIN", "LITE", "LLY", "LMT", "LNT", "LOW", "LRCX", "LULU", "LUV", "LVS", "LYB", "LYV", "MA", "MAA",
+        "MAR", "MAS", "MCD", "MCHP", "MCK", "MCO", "MDLZ", "MDT", "MET", "META", "MGM", "MKC", "MLM", "MMM",
+        "MNST", "MO", "MOS", "MPC", "MPWR", "MRK", "MRNA", "MRSH", "MRVL", "MS", "MSCI", "MSFT", "MSI", "MTB",
+        "MTD", "MU", "NCLH", "NDAQ", "NDSN", "NEE", "NEM", "NFLX", "NI", "NKE", "NOC", "NOW", "NRG", "NSC",
+        "NTAP", "NTRS", "NUE", "NVDA", "NVR", "NWS", "NWSA", "NXPI", "O", "ODFL", "OKE", "OMC", "ON", "ORCL",
+        "ORLY", "OTIS", "OXY", "P", "PANW", "PAYX", "PCAR", "PCG", "PEG", "PEP", "PFE", "PFG", "PG", "PGR",
+        "PH", "PHM", "PKG", "PLD", "PLTR", "PM", "PNC", "PNR", "PNW", "PODD", "PPG", "PPL", "PRU", "PSA",
+        "PSKY", "PSX", "PTC", "PWR", "PYPL", "Q", "QCOM", "RCL", "RDDT", "REG", "REGN", "RF", "RJF", "RL",
+        "RMD", "ROK", "ROL", "ROP", "ROST", "RSG", "RTX", "RVTY", "SBAC", "SBUX", "SCHW", "SHW", "SJM", "SLB",
+        "SMCI", "SNA", "SNDK", "SNPS", "SO", "SOLV", "SPG", "SPGI", "SRE", "STE", "STLD", "STT", "STX", "STZ",
+        "SW", "SWK", "SWKS", "SYF", "SYK", "SYY", "T", "TDG", "TDY", "TECH", "TEL", "TER", "TFC", "TGT", "TJX",
+        "TKO", "TMO", "TMUS", "TPL", "TPR", "TRGP", "TRMB", "TROW", "TRV", "TSCO", "TSLA", "TSN", "TT", "TTWO",
+        "TXN", "TXT", "TYL", "UAL", "UBER", "UDR", "UHS", "ULTA", "UNH", "UNP", "UPS", "URI", "USB", "V",
+        "VEEV", "VICI", "VLO", "VLTO", "VMC", "VMRK", "VRSK", "VRSN", "VRT", "VRTX", "VST", "VTR", "VTRS",
+        "VZ", "WAB", "WAT", "WBD", "WDAY", "WDC", "WEC", "WELL", "WFC", "WM", "WMB", "WMT", "WRB", "WSM",
+        "WST", "WTW", "WY", "WYNN", "XEL", "XOM", "XYL", "XYZ", "YUM", "ZBH", "ZBRA", "ZTS"
+};
 static std::vector<List> starter_lists() {
     return {
         {"At a glance", core_symbols},
         {"Big names", big_names},
+        {"S&P 500", sp500_snapshot, "sp500"},
+        {"Open 85-85", {}, "open8585"},
         {"Indices & broad markets",
          {"SPY", "QQQ", "RSP", "DIA", "IWM", "VTI", "VT", "^GSPC", "^DJI", "^IXIC", "^VIX"}},
         {"Crypto",
@@ -165,18 +206,23 @@ State::State(fs::path dir, bool offline_, fs::path import) : directory(std::move
     }
     if (panels.empty())
         add("SPY");
-    if (watchlist_catalog < 1) {
+    if (watchlist_catalog < 2) {
+        // Catalog 2 added the live lists; earlier catalogs keep any starters the user deleted.
         for (auto &list : starter_lists())
-            if (std::none_of(lists.begin(), lists.end(),
-                             [&](const List &old) { return old.name == list.name; }))
+            if ((watchlist_catalog < 1 || !list.source.empty()) &&
+                std::none_of(lists.begin(), lists.end(), [&](const List &old) {
+                    return old.name == list.name || (!list.source.empty() && old.source == list.source);
+                }))
                 lists.push_back(std::move(list));
-        int favorites = int(
-            std::find_if(lists.begin(), lists.end(), [](const List &l) { return l.name == "At a glance"; }) -
-            lists.begin());
-        add_watchlist(favorites);
-        add_watchlist(selected_list);
-        watchlist_catalog = 1;
-        relayout = true;
+        if (watchlist_catalog < 1) {
+            int favorites = int(std::find_if(lists.begin(), lists.end(),
+                                             [](const List &l) { return l.name == "At a glance"; }) -
+                                lists.begin());
+            add_watchlist(favorites);
+            add_watchlist(selected_list);
+            relayout = true;
+        }
+        watchlist_catalog = 2;
     }
     std::set<std::string> cached_symbols;
     for (auto &p : panels)
@@ -236,6 +282,8 @@ Panel &State::add(std::string symbol, bool duplicate) {
             p->indicators = old.indicators;
             p->candles = old.candles;
             p->ohlc = old.ohlc;
+            p->point_figure = old.point_figure;
+            p->pnf = old.pnf;
             p->logarithmic = old.logarithmic;
             p->volume = old.volume;
             p->earnings = old.earnings;
@@ -281,6 +329,10 @@ Series &State::ensure(const std::string &s, int tf) {
     auto k = key(s, tf);
     auto [it, inserted] = series.try_emplace(k);
     auto &entry = it->second;
+    if (is_expression(s)) {
+        derive(s, tf, entry);
+        return entry;
+    }
     if (inserted) {
         try {
             entry.history = decode_history(read_json(cache_path(directory, s, intervals[tf])));
@@ -296,6 +348,88 @@ Series &State::ensure(const std::string &s, int tf) {
         }
     }
     return entry;
+}
+// Expressions own no network state: their legs load, cache and refresh as ordinary charts.
+void State::derive(const std::string &s, int tf, Series &entry) {
+    Expression e;
+    try {
+        e = parse_expression(s);
+    } catch (const std::exception &error) {
+        entry.error = error.what();
+        entry.next = std::numeric_limits<Time>::max();
+        return;
+    }
+    std::vector<const History *> legs;
+    std::string signature, error;
+    bool loading = false, loaded = true;
+    Time next = std::numeric_limits<Time>::max();
+    for (auto &symbol : e.symbols) {
+        auto &leg = ensure(symbol, tf);
+        legs.push_back(&leg.history);
+        signature += std::to_string(leg.revision) + (leg.loaded ? "+" : "-") + "|";
+        loading |= leg.loading;
+        loaded &= leg.loaded;
+        next = std::min(next, leg.next);
+        if (error.empty() && !leg.error.empty())
+            error = display_symbol(symbol) + ": " + leg.error;
+    }
+    entry.loading = loading;
+    entry.manual &= loading;
+    entry.next = next;
+    entry.error = error;
+    if (!loaded || signature == entry.derived)
+        return;
+    entry.derived = signature;
+    entry.history = combine_expression(s, legs);
+    entry.loaded = !entry.history.bars.empty();
+    if (!entry.loaded && entry.error.empty())
+        entry.error = "These tickers have no overlapping bars.";
+    ++entry.revision;
+    ++visual_revision;
+}
+void State::derive_quotes(const std::vector<std::string> &visible) {
+    for (auto &symbol : visible) {
+        if (!is_expression(symbol))
+            continue;
+        Expression e;
+        try {
+            e = parse_expression(symbol);
+        } catch (...) {
+            continue;
+        }
+        std::map<std::string, double> price, previous;
+        Quote q;
+        q.asof = q.fetched = std::numeric_limits<Time>::max();
+        q.source = "Computed";
+        bool complete = true;
+        for (auto &leg : e.symbols) {
+            auto it = quotes.find(leg);
+            if (it == quotes.end() || quote_errors.count(leg)) {
+                complete = false;
+                break;
+            }
+            auto &lq = it->second;
+            price[leg] = lq.price;
+            previous[leg] = lq.price / (1 + lq.change / 100);
+            q.asof = std::min(q.asof, lq.asof);
+            q.fetched = std::min(q.fetched, lq.fetched);
+            q.snapshot |= lq.snapshot;
+            q.rolling |= lq.rolling;
+        }
+        if (!complete)
+            continue;
+        q.price = e.evaluate(price);
+        double before = e.evaluate(previous);
+        q.change = before != 0 ? (q.price / before - 1) * 100 : missing;
+        if (!std::isfinite(q.price) || !std::isfinite(q.change))
+            continue;
+        auto old = quotes.find(symbol);
+        if (old != quotes.end() && old->second.price == q.price && old->second.change == q.change &&
+            old->second.asof == q.asof && old->second.fetched == q.fetched)
+            continue;
+        quotes[symbol] = q;
+        ++visual_revision;
+    }
 }
 void State::repair(History h, std::function<void(History)> callback) {
     auto targets = data_source(h) == "Yahoo" ? recovery_targets(h, now()) : std::set<Time>{};
@@ -332,6 +466,7 @@ void State::accept(const std::string &k, History h) {
         entry.loaded && family(entry.history) == family(h) ? merge_history(entry.history, h) : std::move(h);
     entry.loaded = !entry.history.bars.empty();
     entry.loading = false;
+    entry.manual = false;
     entry.next = now() + 60;
     entry.error.clear();
     ++entry.revision;
@@ -346,6 +481,16 @@ void State::accept(const std::string &k, History h) {
     }
 }
 void State::fetch(const std::string &symbol, int tf, bool full) {
+    if (is_expression(symbol)) {
+        try {
+            for (auto &leg : parse_expression(symbol).symbols)
+                if (full || ensure(leg, tf).next <= now())
+                    fetch(leg, tf, full);
+        } catch (...) {
+        }
+        ensure(symbol, tf);
+        return;
+    }
     auto &entry = ensure(symbol, tf);
     if (offline || entry.loading)
         return;
@@ -370,7 +515,7 @@ void State::fetch(const std::string &symbol, int tf, bool full) {
                               ++visual_revision;
                               auto &item = series.at(k);
                               item.error = std::move(error);
-                              item.loading = false;
+                              item.loading = item.manual = false;
                               item.next = now() + 120;
                           }
                       });
@@ -422,6 +567,39 @@ void State::accept_quote(const std::string &symbol, Quote q, bool persist) {
         } catch (const std::exception &e) {
             notice = e.what();
         }
+    }
+}
+void State::refresh_live_lists() {
+    if (offline)
+        return;
+    for (auto &w : watchlists) {
+        if (!w->open)
+            continue;
+        auto &l = lists[size_t(w->list)];
+        if (l.source.empty() || l.loading || l.next > now())
+            continue;
+        l.loading = true;
+        // Lists may be deleted or reordered while the request is in flight; find it again by source.
+        network.get(live_list_url(l.source), [this, source = l.source](std::string body, std::string error) {
+            auto it = std::find_if(lists.begin(), lists.end(), [&](const List &l) { return l.source == source; });
+            if (it == lists.end())
+                return;
+            it->loading = false;
+            it->next = now() + (error.empty() ? 3600 : 900);
+            ++visual_revision;
+            try {
+                if (!error.empty())
+                    throw std::runtime_error(error);
+                auto live = parse_live_list(source, body);
+                if (live.symbols != it->symbols)
+                    request_save();
+                it->symbols = std::move(live.symbols);
+                it->asof = live.asof.empty() ? local_date(now(), "%Y-%m-%d") : live.asof;
+                it->error.clear();
+            } catch (const std::exception &e) {
+                it->error = e.what();
+            }
+        });
     }
 }
 void State::fetch_quote(const std::string &symbol) {
@@ -618,12 +796,71 @@ void State::refresh_screener() {
 }
 void State::refresh(Panel &p) {
     fetch(p.symbol, p.tf, true);
+    auto &entry = ensure(p.symbol, p.tf);
+    entry.manual = entry.loading;
+}
+const ProfileEntry &State::profile(const std::string &symbol) {
+    auto [it, inserted] = profiles.try_emplace(symbol);
+    auto &entry = it->second;
+    if (is_expression(symbol)) {
+        if (inserted) {
+            entry.loaded = true;
+            entry.data.type = "Computed from tickers";
+            entry.data.name = display_symbol(symbol);
+        }
+        return entry;
+    }
+    auto path = cache_path(directory, symbol, "profile");
+    if (inserted) {
+        try {
+            auto j = read_json(path);
+            if (j.at("symbol") == symbol) {
+                entry.data = {j.at("name").get<std::string>(), j.value("type", std::string{}),
+                              j.value("sector", std::string{}), j.value("industry", std::string{})};
+                entry.fetched = j.at("fetched");
+                entry.loaded = true;
+                entry.next = entry.fetched + 30 * 86400; // Names and sectors rarely change.
+            }
+        } catch (...) {
+        }
+    }
+    if (offline || entry.loading || entry.next > now())
+        return entry;
+    entry.loading = true;
+    network.get(profile_url(symbol), [this, symbol, path](std::string body, std::string error) {
+        auto &entry = profiles[symbol];
+        entry.loading = false;
+        ++visual_revision;
+        try {
+            if (!error.empty())
+                throw std::runtime_error(error);
+            entry.data = parse_profile(body, symbol);
+            entry.fetched = now();
+            entry.next = entry.fetched + 30 * 86400;
+            entry.loaded = true;
+            entry.error.clear();
+            atomic_json(path, {{"symbol", symbol},
+                               {"name", entry.data.name},
+                               {"type", entry.data.type},
+                               {"sector", entry.data.sector},
+                               {"industry", entry.data.industry},
+                               {"fetched", entry.fetched}});
+        } catch (const std::exception &e) {
+            entry.error = e.what();
+            entry.next = now() + 3600;
+        }
+    });
+    return entry;
 }
 std::set<std::string> State::needed_companies() const {
     std::set<std::string> symbols;
     for (auto &p : panels)
-        if (p->open && (p->earnings || p->eps))
-            symbols.insert(p->symbol);
+        if (p->open && (p->earnings || p->eps)) {
+            // Earnings and fundamentals wait until the chart has bars, so they never delay its history.
+            auto it = series.find(key(p->symbol, p->tf));
+            if (it != series.end() && it->second.loaded)
+                symbols.insert(p->symbol);
+        }
     if (fundamentals.open) {
         std::string symbol = fundamentals.symbol;
         if (fundamentals.follow)
@@ -710,6 +947,8 @@ void State::update(Panel &p) {
     if (!e.loaded)
         return;
     std::string sig = std::to_string(e.revision);
+    if (p.point_figure)
+        sig += "pnf" + encode_pnf(p.pnf).dump();
     if (p.eps)
         sig += "eps" + std::to_string(company(p.symbol).revision) + std::to_string(p.eps_ttm);
     for (auto &s : p.indicators) {
@@ -737,6 +976,16 @@ void State::update(Panel &p) {
             p.pending_julia = false;
         }
     }
+    if (p.point_figure) {
+        size_t before = p.pnf_chart.columns.size();
+        p.pnf_chart = point_and_figure(p.bars, p.pnf);
+        // Keep the reader's place as new columns arrive; follow the latest column if it was in view.
+        // A fresh chart (pnf_fit) is sized by the renderer, which knows the plot's shape.
+        auto n = p.pnf_chart.columns.size();
+        if (!p.pnf_fit && p.pnf_view.first + p.pnf_view.count * View::latest_position >= double(before) - 1.5)
+            p.pnf_view.first = double(n) - .5 - p.pnf_view.count * View::latest_position;
+    } else
+        p.pnf_chart = {};
     p.results.clear();
     for (auto &s : p.indicators)
         if (s.enabled) {
@@ -770,12 +1019,22 @@ std::vector<std::string> State::visible_symbols() const {
         if (seen.insert(symbol).second)
             visible.push_back(symbol);
     };
+    // Expressions are listed with their legs, whose quotes they are computed from.
+    auto add = [&](const std::string &symbol) {
+        append(symbol);
+        if (is_expression(symbol))
+            try {
+                for (auto &leg : parse_expression(symbol).symbols)
+                    append(leg);
+            } catch (...) {
+            }
+    };
     for (auto &p : panels)
-        append(p->symbol);
+        add(p->symbol);
     for (auto &w : watchlists)
         if (w->open)
-            for (auto &symbol : lists[size_t(w->list)].symbols)
-                append(symbol);
+            for (auto &symbol : w->measured ? w->shown : lists[size_t(w->list)].symbols)
+                add(symbol);
     return visible;
 }
 bool State::tick() {
@@ -794,16 +1053,21 @@ bool State::tick() {
     }
     for (auto &symbol : needed_companies())
         company(symbol);
+    refresh_live_lists();
     for (auto &p : panels)
         update(*p);
     auto visible = visible_symbols();
+    derive_quotes(visible);
     if (!offline && quote_tick <= now()) {
         quote_tick = now() + 1;
+        // Longest-waiting symbol first, so lists longer than the refresh cycle do not starve.
+        const std::string *due = nullptr;
         for (auto &symbol : visible)
-            if (!quote_loading.count(symbol) && quote_next[symbol] <= now()) {
-                fetch_quote(symbol);
-                break;
-            }
+            if (!is_expression(symbol) && !quote_loading.count(symbol) && quote_next[symbol] <= now() &&
+                (!due || quote_next[symbol] < quote_next[*due]))
+                due = &symbol;
+        if (due)
+            fetch_quote(*due);
     }
     for (auto &symbol : visible) {
         auto q = quotes.find(symbol);
@@ -833,6 +1097,11 @@ Time State::next_deadline() const {
             next = std::min(next, options.next);
         if (screener.open && !screener.loading)
             next = std::min(next, screener.next);
+        for (auto &w : watchlists) {
+            auto &l = lists[size_t(w->list)];
+            if (w->open && !l.source.empty() && !l.loading)
+                next = std::min(next, l.next);
+        }
         for (auto &[symbol, tf] : needed_series()) {
             auto it = series.find(key(symbol, tf));
             if (it == series.end())
@@ -841,7 +1110,7 @@ Time State::next_deadline() const {
                 next = std::min(next, it->second.next);
         }
         for (auto &symbol : visible_symbols()) {
-            if (!quote_loading.count(symbol)) {
+            if (!is_expression(symbol) && !quote_loading.count(symbol)) {
                 auto it = quote_next.find(symbol);
                 next = std::min(next, std::max(quote_tick, it == quote_next.end() ? clock : it->second));
             }
@@ -878,6 +1147,8 @@ static Json encode_panel(const Panel *p) {
             {"eps", p->eps},
             {"eps_ttm", p->eps_ttm},
             {"logarithmic", p->logarithmic},
+            {"point_figure", p->point_figure},
+            {"pnf", encode_pnf(p->pnf)},
             {"show_drawings", p->show_drawings},
             {"indicators", inds},
             {"option_ladder", p->option_ladder},
@@ -892,8 +1163,14 @@ Json State::document() const {
     for (auto &p : panels)
         charts.push_back(encode_panel(p.get()));
     Json ls = Json::array();
-    for (auto &l : lists)
-        ls.push_back({{"name", l.name}, {"symbols", l.symbols}});
+    for (auto &l : lists) {
+        Json row = {{"name", l.name}, {"symbols", l.symbols}};
+        if (!l.source.empty()) {
+            row["source"] = l.source;
+            row["asof"] = l.asof;
+        }
+        ls.push_back(std::move(row));
+    }
     Json windows = Json::array();
     for (auto &w : watchlists)
         if (w->open)
@@ -940,7 +1217,7 @@ static std::unique_ptr<Panel> decode_panel(const Json &c, bool julia = false) {
     p->id = c.at("id");
     if (p->id < 1)
         throw std::runtime_error("Invalid chart IDs");
-    p->symbol = normalize_symbol(c.at("symbol"));
+    p->symbol = julia ? resolve_symbol(c.at("symbol")) : normalize_symbol(c.at("symbol"));
     p->tf = c.at("timeframe").get<int>() - (julia ? 1 : 0);
     if (p->tf < 0 || p->tf > 3)
         throw std::runtime_error("Invalid timeframe");
@@ -954,6 +1231,8 @@ static std::unique_ptr<Panel> decode_panel(const Json &c, bool julia = false) {
     p->candles = style != "line";
     p->ohlc = style == "bars";
     p->logarithmic = c.value("logarithmic", false);
+    p->point_figure = c.value("point_figure", false);
+    p->pnf = decode_pnf(c.value("pnf", Json::object()));
     p->volume = c.value("volume", true);
     p->earnings = c.value("earnings", true);
     p->eps = c.value("eps", false);
@@ -1010,6 +1289,11 @@ void State::restore(const Json &j, bool julia) {
                 throw std::runtime_error("Invalid list name");
             for (auto &s : l.at("symbols"))
                 row.symbols.push_back(normalize_symbol(s));
+            row.source = l.value("source", std::string{});
+            if (live_list_url(row.source).empty())
+                row.source.clear();
+            else
+                row.asof = l.value("asof", std::string{});
             ls.push_back(std::move(row));
         }
         if (!ls.empty())
@@ -1078,7 +1362,7 @@ void State::import_julia(const fs::path &dir) {
         for (auto &row : j.at("lists")) {
             List l{row.at("name"), {}};
             for (auto &s : row.at("symbols"))
-                l.symbols.push_back(normalize_symbol(s));
+                l.symbols.push_back(resolve_symbol(s));
             ls.push_back(std::move(l));
         }
         if (!ls.empty()) {

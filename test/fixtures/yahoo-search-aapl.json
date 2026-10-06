@@ -1,0 +1,24 @@
+{
+ "quotes": [
+  {
+   "exchange": "NMS",
+   "shortname": "Apple Inc.",
+   "quoteType": "EQUITY",
+   "symbol": "AAPL",
+   "typeDisp": "Equity",
+   "longname": "Apple Inc.",
+   "sector": "Technology",
+   "sectorDisp": "Technology",
+   "industry": "Consumer Electronics",
+   "industryDisp": "Consumer Electronics"
+  },
+  {
+   "exchange": "NGM",
+   "shortname": "Direxion Daily AAPL Bull 2X ETF",
+   "quoteType": "ETF",
+   "symbol": "AAPU",
+   "typeDisp": "ETF",
+   "longname": "Direxion Daily AAPL Bull 2X Shares"
+  }
+ ]
+}

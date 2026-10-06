@@ -6,38 +6,77 @@ void Providers::yahoo(std::string symbol, std::string interval, Time start, std:
     // A provider switch reloads its history: don't splice different price adjustments together.
     if (previous_source != "Yahoo")
         start = interval == "1h" ? now() - 729 * 86400 : 0;
-    net.get(history_url(symbol, interval, start, now()),
-            [this, symbol, interval, cb](std::string body, std::string error) {
-                try {
-                    if (!error.empty())
-                        throw std::runtime_error(error);
-                    auto h = parse_history(body, symbol, interval);
-                    h.meta["chartroomSource"] = "Yahoo";
-                    cb(std::move(h), {});
-                } catch (const std::exception &e) {
-                    auto problem = std::string(e.what());
-                    if (interval != "1d" || !nasdaq_symbol(symbol)) {
-                        cb({}, "Yahoo: " + problem);
-                        return;
-                    }
-                    std::string code = symbol;
-                    std::transform(code.begin(), code.end(), code.begin(),
-                                   [](unsigned char c) { return char(std::tolower(c)); });
-                    net.get("https://stooq.com/q/d/l/?s=" + url_encode(code + ".us") + "&i=d",
-                            [symbol, cb, problem](std::string body, std::string error) {
-                                try {
-                                    if (!error.empty())
-                                        throw std::runtime_error(error);
-                                    auto h = stooq_history(body, symbol);
-                                    h.meta["chartroomProviderNotice"] =
-                                        "Nasdaq/Yahoo unavailable; Stooq end-of-day history.";
-                                    cb(std::move(h), {});
-                                } catch (const std::exception &e) {
-                                    cb({}, "Yahoo: " + problem + "; Stooq: " + e.what());
-                                }
-                            });
-                }
-            });
+    // A full daily or weekly load answers with two years first (~0.4 s) so the chart appears at once,
+    // then backfills the complete history, which merges in behind it.
+    bool backfill = start == 0;
+    net.get(
+        history_url(symbol, interval, backfill ? now() - 2 * 366 * 86400 : start, now()),
+        [this, symbol, interval, backfill, cb](std::string body, std::string error) {
+            try {
+                if (!error.empty())
+                    throw std::runtime_error(error);
+                auto h = parse_history(body, symbol, interval);
+                h.meta["chartroomSource"] = "Yahoo";
+                cb(std::move(h), {});
+            } catch (const std::exception &e) {
+                auto problem = "Yahoo: " + std::string(e.what());
+                if (interval != "1d" || !nasdaq_symbol(symbol))
+                    cb({}, problem);
+                else
+                    nasdaq(symbol, problem, cb);
+                return;
+            }
+            if (backfill)
+                net.get(history_url(symbol, interval, 0, now()),
+                        [symbol, interval, cb](std::string body, std::string error) {
+                            // A failed backfill leaves the two years already shown.
+                            try {
+                                if (!error.empty())
+                                    throw std::runtime_error(error);
+                                auto h = parse_history(body, symbol, interval);
+                                h.meta["chartroomSource"] = "Yahoo";
+                                cb(std::move(h), {});
+                            } catch (...) {
+                            }
+                        });
+        },
+        true);
+}
+// Fallbacks when Yahoo fails for a US stock or ETF: Nasdaq's daily chart, then Stooq end-of-day.
+void Providers::nasdaq(std::string symbol, std::string problem, HistoryCallback cb) {
+    auto url = nasdaq_url(symbol, "chart") + "&fromdate=1990-01-01&todate=" + date(now(), "%Y-%m-%d");
+    net.get(
+        url,
+        [this, symbol, problem, cb](std::string body, std::string error) {
+            try {
+                if (!error.empty())
+                    throw std::runtime_error(error);
+                auto h = nasdaq_history(body, symbol);
+                h.meta["chartroomProviderNotice"] = problem + "; showing Nasdaq completed sessions.";
+                cb(std::move(h), {});
+            } catch (const std::exception &e) {
+                auto failures = problem + "; Nasdaq: " + e.what();
+                std::string code = symbol;
+                std::transform(code.begin(), code.end(), code.begin(),
+                               [](unsigned char c) { return char(std::tolower(c)); });
+                net.get(
+                    "https://stooq.com/q/d/l/?s=" + url_encode(code + ".us") + "&i=d",
+                    [symbol, cb, failures](std::string body, std::string error) {
+                        try {
+                            if (!error.empty())
+                                throw std::runtime_error(error);
+                            auto h = stooq_history(body, symbol);
+                            h.meta["chartroomProviderNotice"] =
+                                "Yahoo and Nasdaq unavailable; Stooq end-of-day history.";
+                            cb(std::move(h), {});
+                        } catch (const std::exception &e) {
+                            cb({}, failures + "; Stooq: " + e.what());
+                        }
+                    },
+                    true);
+            }
+        },
+        true);
 }
 void Providers::history(std::string symbol, std::string interval, Time start, std::string previous_source,
                         HistoryCallback cb) {
@@ -46,52 +85,22 @@ void Providers::history(std::string symbol, std::string interval, Time start, st
         auto i = interval == "1wk" ? "1w" : interval;
         auto url = "https://api.binance.com/api/v3/klines?symbol=" + url_encode(symbol) + "&interval=" + i +
                    "&limit=1000";
-        net.get(url, [symbol, interval, cb](std::string body, std::string error) {
-            try {
-                if (!error.empty())
-                    throw std::runtime_error(error);
-                cb(binance_history(body, symbol, interval), {});
-            } catch (const std::exception &e) {
-                cb({},
-                   "Binance: " + std::string(e.what()) + ". USD composite symbols such as BTC use Yahoo.");
-            }
-        });
+        net.get(
+            url,
+            [symbol, interval, cb](std::string body, std::string error) {
+                try {
+                    if (!error.empty())
+                        throw std::runtime_error(error);
+                    cb(binance_history(body, symbol, interval), {});
+                } catch (const std::exception &e) {
+                    cb({}, "Binance: " + std::string(e.what()) +
+                               ". USD composite symbols such as BTC use Yahoo.");
+                }
+            },
+            true);
         return;
     }
-    if (interval != "1d" || !nasdaq_symbol(symbol) || retry["history:" + symbol] > now()) {
-        yahoo(symbol, interval, start, previous_source, cb);
-        return;
-    }
-    Time from = previous_source.starts_with("Nasdaq") ? start : 0;
-    auto url = nasdaq_url(symbol, "chart") +
-               "&fromdate=" + (from > 0 ? date(from, "%Y-%m-%d") : "1990-01-01") +
-               "&todate=" + date(now(), "%Y-%m-%d");
-    net.get(url, [this, symbol, interval, start, previous_source, cb](std::string body, std::string error) {
-        try {
-            if (!error.empty())
-                throw std::runtime_error(error);
-            auto h = nasdaq_history(body, symbol);
-            // Nasdaq's daily chart excludes the active session. Supplement only later sessions,
-            // never rewrite its historical OHLC with another provider's adjusted series.
-            net.get(history_url(symbol, "1d", now() - 5 * 86400, now()),
-                    [h = std::move(h), cb](std::string body, std::string error) mutable {
-                        try {
-                            if (!error.empty())
-                                throw std::runtime_error(error);
-                            auto tail = parse_history(body, h.symbol, "1d");
-                            h = append_session(std::move(h), tail);
-                        } catch (const std::exception &e) {
-                            h.meta["chartroomProviderNotice"] =
-                                "Latest-session refresh unavailable; Nasdaq completed sessions only. " +
-                                std::string(e.what());
-                        }
-                        cb(std::move(h), {});
-                    });
-        } catch (const std::exception &) {
-            retry["history:" + symbol] = now() + 15 * 60;
-            yahoo(symbol, interval, start, previous_source, cb);
-        }
-    });
+    yahoo(symbol, interval, start, previous_source, cb);
 }
 void Providers::quote(std::string symbol, QuoteCallback cb) {
     if (symbol.ends_with("USDT")) {

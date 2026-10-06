@@ -83,7 +83,7 @@ static void options_window(State &s) {
     }
     if (load) {
         try {
-            o.symbol = normalize_symbol(ticker);
+            o.symbol = resolve_symbol(ticker);
             o.expiry.clear();
             s.refresh_options();
         } catch (const std::exception &e) {
@@ -361,7 +361,7 @@ static void screener_window(State &s) {
                 }
                 if (ImGui::BeginMenu("Add to watchlist")) {
                     for (auto &list : s.lists)
-                        if (ImGui::MenuItem(list.name.c_str()) &&
+                        if (list.source.empty() && ImGui::MenuItem(list.name.c_str()) &&
                             std::find(list.symbols.begin(), list.symbols.end(), r.symbol) ==
                                 list.symbols.end())
                             list.symbols.push_back(r.symbol);
@@ -412,7 +412,7 @@ static void fundamentals_window(State &s) {
     if (ImGui::InputTextWithHint("##company", w.symbol.c_str(), w.input, sizeof(w.input),
                                  ImGuiInputTextFlags_EnterReturnsTrue)) {
         try {
-            w.symbol = normalize_symbol(w.input);
+            w.symbol = resolve_symbol(w.input);
             w.follow = false;
             w.input[0] = 0;
         } catch (const std::exception &e) {

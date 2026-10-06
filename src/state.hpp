@@ -9,18 +9,33 @@ struct Series {
     History history;
     uint64_t revision = 0;
     bool loaded = false, loading = false;
+    bool manual = false;  // The pending fetch was requested by the user.
+    std::string derived;  // Expressions: leg revisions the bars were last combined from.
     Time next = 0;
+    std::string error;
+};
+struct ProfileEntry {
+    Profile data;
+    bool loaded = false, loading = false;
+    Time fetched = 0, next = 0;
     std::string error;
 };
 struct List {
     std::string name;
     std::vector<std::string> symbols;
+    std::string source, asof; // Live lists (see live_list_url) replace their symbols on refresh.
+    Time next = 0;
+    bool loading = false;
+    std::string error;
 };
 struct WatchlistWindow {
     int id = 1, list = 0;
     bool open = true, focus = false;
-    char jump[64]{}, input[64]{}, name[128]{};
+    char input[64]{}, name[128]{};
     std::string error;
+    // Rows drawn last frame; long lists only poll quotes for what is on screen.
+    std::vector<std::string> shown;
+    bool measured = false;
 };
 struct OptionMarker {
     std::string expiry;
@@ -47,9 +62,15 @@ struct FundamentalsWindow {
 struct Panel {
     int id = 1, tf = 2;
     std::string symbol = "SPY";
+    char jump[64]{}; // Header symbol field while it is being edited.
     View view;
     ScrollGesture scroll;
     bool candles = true, ohlc = false, volume = true, open = true, logarithmic = false;
+    bool point_figure = false; // Replaces the time chart; candle style is kept for switching back.
+    PnfSettings pnf;
+    PnfChart pnf_chart;
+    View pnf_view;              // In columns; refit when the chart is first built.
+    bool pnf_fit = true;
     std::vector<Indicator> indicators;
     std::vector<Bar> bars;
     std::vector<Result> results;
@@ -120,6 +141,8 @@ class State {
     std::map<std::string, Quote> quotes;
     std::map<std::string, std::string> quote_errors;
     std::map<std::string, Series> series;
+    std::map<std::string, ProfileEntry> profiles;
+    const ProfileEntry &profile(const std::string &); // Loads or fetches a ticker's name on demand.
     Panel &current();
     Panel &add(std::string symbol = "", bool duplicate = false);
     void select(Panel &, std::string, int tf);
@@ -155,6 +178,9 @@ class State {
     std::string key(const std::string &, int tf) const;
     void fetch(const std::string &, int tf, bool full = false);
     void fetch_quote(const std::string &);
+    void refresh_live_lists();
+    void derive(const std::string &, int tf, Series &);
+    void derive_quotes(const std::vector<std::string> &visible);
     void accept_quote(const std::string &, Quote, bool persist = true);
     void repair(History, std::function<void(History)>);
     void accept(const std::string &, History);

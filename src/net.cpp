@@ -14,8 +14,8 @@
 #include <vector>
 #endif
 namespace cr {
-void Network::get(std::string url, Callback callback) {
-    request(std::move(url), {}, false, std::move(callback));
+void Network::get(std::string url, Callback callback, bool urgent) {
+    request(std::move(url), {}, false, std::move(callback), urgent);
 }
 void Network::post(std::string url, std::string body, Callback callback) {
     request(std::move(url), std::move(body), true, std::move(callback));
@@ -41,7 +41,8 @@ void Network::poll() {
 void Network::set_wakeup(std::function<void()> wakeup) {
     impl->wakeup = std::move(wakeup);
 }
-void Network::request(std::string url, std::string body, bool post, Callback callback) {
+void Network::request(std::string url, std::string body, bool post, Callback callback, bool) {
+    // The browser schedules fetches itself, so urgency needs no queue here.
     // Fixed provider origins only; the preview server validates every route and parameter.
     for (auto [origin, route] : {std::pair{"https://query1.finance.yahoo.com/", "/yahoo/"},
                                  {"https://api.nasdaq.com/", "/nasdaq/"},
@@ -104,7 +105,7 @@ struct Network::Impl {
     };
     std::mutex mutex;
     std::condition_variable cv;
-    std::deque<Job> jobs;
+    std::deque<Job> urgent, jobs;
     std::deque<Done> done;
     std::atomic<bool> stop = false;
     std::function<void()> wakeup;
@@ -122,22 +123,26 @@ struct Network::Impl {
         return n;
     }
     void worker() {
+        // One handle per worker for its lifetime: curl_easy_reset keeps the connection cache, so
+        // repeat requests to a provider skip the TCP and TLS handshake (0.1-0.7 s each).
+        CURL *curl = curl_easy_init();
         for (;;) {
             Job job;
             {
                 std::unique_lock lock(mutex);
-                cv.wait(lock, [&] { return stop || !jobs.empty(); });
+                cv.wait(lock, [&] { return stop || !urgent.empty() || !jobs.empty(); });
                 if (stop)
-                    return;
-                job = std::move(jobs.front());
-                jobs.pop_front();
+                    break;
+                auto &queue = urgent.empty() ? jobs : urgent;
+                job = std::move(queue.front());
+                queue.pop_front();
             }
             Done d;
             d.callback = std::move(job.callback);
-            CURL *curl = curl_easy_init();
             if (!curl) {
                 d.error = "Could not initialize HTTP client";
             } else {
+                curl_easy_reset(curl);
                 curl_easy_setopt(curl, CURLOPT_URL, job.url.c_str());
                 curl_easy_setopt(curl, CURLOPT_USERAGENT,
                                  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -181,7 +186,6 @@ struct Network::Impl {
                     d.error = curl_easy_strerror(code);
                 else if (status < 200 || status >= 300)
                     d.error = "HTTP " + std::to_string(status) + (status == 429 ? " / rate limited" : "");
-                curl_easy_cleanup(curl);
                 curl_slist_free_all(headers);
             }
             std::function<void()> notify;
@@ -193,11 +197,14 @@ struct Network::Impl {
             if (notify)
                 notify();
         }
+        if (curl)
+            curl_easy_cleanup(curl);
     }
 };
 Network::Network() : impl(std::make_unique<Impl>()) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
-    for (int i = 0; i < 2; ++i)
+    // Enough for a chart's history to start while quotes and fundamentals are already in flight.
+    for (int i = 0; i < 6; ++i)
         impl->threads.emplace_back([this] { impl->worker(); });
 }
 Network::~Network() {
@@ -211,10 +218,10 @@ void Network::set_wakeup(std::function<void()> wakeup) {
     std::lock_guard lock(impl->mutex);
     impl->wakeup = std::move(wakeup);
 }
-void Network::request(std::string url, std::string body, bool post, Callback callback) {
+void Network::request(std::string url, std::string body, bool post, Callback callback, bool urgent) {
     {
         std::lock_guard lock(impl->mutex);
-        impl->jobs.push_back({std::move(url), std::move(body), post, std::move(callback)});
+        (urgent ? impl->urgent : impl->jobs).push_back({std::move(url), std::move(body), post, std::move(callback)});
     }
     impl->cv.notify_one();
 }

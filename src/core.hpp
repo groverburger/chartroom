@@ -110,7 +110,7 @@ inline const std::vector<std::string> big_names = {
 inline const char *timeframes[] = {"1h", "4h", "1D", "1W"};
 inline const char *intervals[] = {"1h", "1h", "1d", "1wk"};
 inline const char *kinds[] = {"SMA",      "EMA", "BB",    "RSI", "MACD", "ATR", "RIBBON",
-                              "DONCHIAN", "KC",  "STOCH", "ROC", "VWMA", "OBV", "PIVOTS"};
+                              "DONCHIAN", "KC",  "STOCH", "ROC", "VWMA", "OBV", "PIVOTS", "AD"};
 inline const char *names[] = {"Simple moving average",
                               "Exponential moving average",
                               "Bollinger Bands",
@@ -124,14 +124,30 @@ inline const char *names[] = {"Simple moving average",
                               "Rate of change",
                               "Volume-weighted moving average",
                               "On-balance volume",
-                              "Swing highs / lows (pivot points)"};
+                              "Swing highs / lows (pivot points)",
+                              "Accumulation / distribution rating (open8585)"};
 Time now();
 Time parse_time(const std::string &);
 std::string date(Time, const char *format = "%Y-%m-%d %H:%M"); // UTC for storage and provider requests.
 std::string local_date(Time, const char *format = "%Y-%m-%d %H:%M %Z");
 Time local_wall(Time);    // Local civil fields encoded on a UTC-shaped calendar for grid arithmetic.
 Time local_instant(Time); // Convert those civil fields back using the system/browser DST rules.
-std::string normalize_symbol(std::string);
+// Symbols may also be arithmetic over tickers, as in TradingView: RSP/SPY, (AAPL+MSFT)/2, SPY - QQQ.
+// Tickers contain dashes (BTC-USD), so subtraction needs spaces. Canonical form: "RSP/SPY", "SPY - QQQ".
+std::string normalize_symbol(std::string); // Canonical ticker validation; "ES" stays Eversource.
+std::string resolve_symbol(std::string);   // Typed input: also maps shorthands such as BTC and ES.
+bool is_expression(const std::string &canonical);
+struct Expression {
+    struct Token {
+        char op = 0; // 0 for an operand.
+        std::string symbol;
+        double number = 0;
+    };
+    std::vector<Token> rpn;
+    std::vector<std::string> symbols; // Distinct tickers in first-use order.
+    double evaluate(const std::map<std::string, double> &values) const;
+};
+Expression parse_expression(const std::string &canonical);
 std::string display_symbol(const std::string &);
 std::string url_encode(const std::string &);
 std::string history_url(const std::string &, const std::string &, Time start, Time end);
@@ -148,10 +164,15 @@ std::set<Time> recovery_targets(const History &, Time clock);
 History recover_crypto(History, const History &, const std::set<Time> &, Time clock);
 History recover_vix(History, const History &, const std::set<Time> &, Time clock);
 std::optional<Quote> quote(const History &);
+// Bars where every leg trades (matched by day, week, or hour), with volume unavailable.
+History combine_expression(const std::string &symbol, const std::vector<const History *> &legs);
 Quote parse_quote(const std::string &body, const std::string &symbol);
 std::vector<Bar> aggregate(const std::vector<Bar> &, int hours);
 std::vector<double> mean(const std::vector<double> &, int);
 std::vector<double> ema(const std::vector<double> &, int, bool wilder = false);
+// open8585 A/D EMA conviction balance, -100..+100; missing until 63 sessions of history.
+std::vector<double> ad_balance(const std::vector<Bar> &, int half_life = 20);
+const char *ad_grade(double balance); // Frozen daily A+ .. E boundaries for the 20-session half-life.
 Indicator indicator(const std::string &);
 Indicator next_indicator(const std::string &, const std::vector<Indicator> &);
 Json encode_indicator(const Indicator &);
@@ -164,6 +185,36 @@ Grid price_grid(double low, double high, double pixels);
 Grid log_price_grid(double low, double high, double pixels);
 std::string price_label(double, double step);
 uint32_t ribbon_color(double);
+
+// Point and figure: columns of rising X boxes and falling O boxes on a fixed price grid, without a time axis.
+struct PnfSettings {
+    bool logarithmic = true;
+    double percent = 1;  // Logarithmic box: each row is this percent above the one below.
+    double box = 0;      // Arithmetic box in price units; 0 chooses the traditional size for the latest price.
+    int reversal = 3;    // Boxes against the column needed to start a new one.
+    bool closes = false; // Close-only instead of the high/low method.
+};
+struct PnfColumn {
+    bool up = true;
+    int low = 0, high = 0;      // Inclusive grid rows.
+    std::vector<int> fills;     // Bar index that filled each box, in the order filled.
+    int signal = 0;             // +1 double-top breakout, -1 double-bottom breakdown.
+    int bar(int row) const {    // Bar that filled the box at this row.
+        return fills[size_t(up ? row - low : high - row)];
+    }
+};
+struct PnfChart {
+    std::vector<PnfColumn> columns;
+    bool logarithmic = true;
+    double step = 0; // Ratio minus one (log) or price units (arithmetic) per row.
+    std::string error;
+    double price(int row) const;
+    double row(double price) const; // Fractional row, for markers between levels.
+};
+double pnf_traditional_box(double price);
+PnfChart point_and_figure(const std::vector<Bar> &, const PnfSettings &);
+Json encode_pnf(const PnfSettings &);
+PnfSettings decode_pnf(const Json &);
 Json encode_view(const View &, const std::vector<Bar> &);
 void restore_view(View &, const std::vector<Bar> &, const Json &, bool julia = false);
 void preserve_view(View &, const std::vector<Bar> &old, const std::vector<Bar> &next);

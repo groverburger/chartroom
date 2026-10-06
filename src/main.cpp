@@ -1,4 +1,5 @@
 #include "app.hpp"
+#include "app_icon.hpp"
 #include "build_version.hpp"
 #include "font.hpp"
 #include "imgui.h"
@@ -217,7 +218,7 @@ int main(int argc, char **argv) {
                 shot = value();
             else if (arg == "--fetch") {
                 fetch_only = true;
-                symbol = cr::normalize_symbol(value());
+                symbol = cr::resolve_symbol(value());
             } else if (arg == "--version") {
                 std::cout << "Chartroom " << cr::build::version << " ("
                           << cr::local_date(cr::parse_time(cr::build::timestamp)) << ")\n";
@@ -312,6 +313,11 @@ int main(int argc, char **argv) {
             glfwTerminate();
             throw std::runtime_error("Could not create an OpenGL window.");
         }
+#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+        // Title bar and taskbar icon; macOS uses the bundle's Chartroom.icns instead.
+        GLFWimage icon{cr::app_icon::size, cr::app_icon::size, const_cast<unsigned char *>(cr::app_icon::rgba)};
+        glfwSetWindowIcon(app->window, 1, &icon);
+#endif
         if (state.x >= 0 && state.y >= 0)
             glfwSetWindowPos(app->window, state.x, state.y);
         if (state.maximized)

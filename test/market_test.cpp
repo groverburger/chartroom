@@ -24,6 +24,24 @@ int main(int argc, char **argv) {
     try {
         CHECK(argc == 2);
         std::string dir = argv[1];
+        // Ticker names: the exact symbol only, with sector for stocks and the instrument type for funds.
+        auto apple = parse_profile(fixture(dir, "yahoo-search-aapl.json"), "AAPL");
+        CHECK(apple.name == "Apple Inc." && apple.sector == "Technology" && apple.industry == "Consumer Electronics");
+        auto fund = parse_profile(fixture(dir, "yahoo-search-xlk.json"), "XLK");
+        CHECK(fund.type == "ETF" && fund.sector.empty() && fund.name.find("Technology") != std::string::npos);
+        CHECK(fails([&] { parse_profile(fixture(dir, "yahoo-search-aapl.json"), "AAP"); }));
+        CHECK(profile_url("^VIX").find("q=%5EVIX") != std::string::npos);
+        // Live watchlists: dashed class shares, sorted S&P members, and the 85-85 list in published order.
+        auto sp500 = parse_live_list("sp500", fixture(dir, "sp500-constituents.csv"));
+        CHECK(sp500.symbols.size() == 503 && std::is_sorted(sp500.symbols.begin(), sp500.symbols.end()));
+        for (auto symbol : {"BRK-B", "BF-B", "ES", "CL", "AAPL"})
+            CHECK(std::count(sp500.symbols.begin(), sp500.symbols.end(), symbol) == 1);
+        CHECK(fails([] { parse_live_list("sp500", "Symbol,Security\nAAPL,Apple\n"); }));
+        auto open8585 = parse_live_list("open8585", fixture(dir, "open8585-list.json"));
+        CHECK(open8585.symbols == std::vector<std::string>({"MPC", "PSX", "VLO"}));
+        CHECK(open8585.asof == "2026-09-25");
+        CHECK(fails([] { parse_live_list("open8585", "{}"); }));
+        CHECK(live_list_url("open8585").ends_with("/api/list.json") && live_list_url("custom").empty());
         Json parts = {{"earnings", Json::parse(fixture(dir, "nasdaq-earnings.json"))},
                       {"profile", Json::parse(fixture(dir, "nasdaq-profile.json"))},
                       {"summary", Json::parse(fixture(dir, "nasdaq-summary.json"))}};

@@ -1,5 +1,6 @@
 #include "app.hpp"
 #include "build_version.hpp"
+#include "render_schedule.hpp"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -9,16 +10,51 @@
 #include <cctype>
 #include <cstdio>
 #include <functional>
+#include <optional>
 namespace cr {
 void market_windows(State &);
-static constexpr ImU32 bg = rgba(11, 16, 23), grid = rgba(31, 41, 51), muted = rgba(117, 140, 163),
-                       ink = rgba(219, 230, 240);
+static constexpr ImU32 bg = rgba(11, 16, 23), grid = rgba(24, 32, 41), muted = rgba(117, 140, 163),
+                       ink = rgba(219, 230, 240), surface = rgba(14, 20, 28), chrome = rgba(10, 14, 20),
+                       line_color = rgba(33, 43, 55), accent = rgba(80, 150, 240), faint = rgba(78, 96, 116);
+static ImU32 with_alpha(ImU32 c, int a) { return (c & 0x00ffffffu) | (uint32_t(a) << 24); }
+static void dashed(ImDrawList *draw, ImVec2 a, ImVec2 b, ImU32 c, float dash = 4, float gap = 4) {
+    float dx = b.x - a.x, dy = b.y - a.y, length = std::sqrt(dx * dx + dy * dy);
+    if (!(length > 0))
+        return;
+    dx /= length;
+    dy /= length;
+    for (float t = 0; t < length; t += dash + gap) {
+        float e = std::min(length, t + dash);
+        draw->AddLine({a.x + dx * t, a.y + dy * t}, {a.x + dx * e, a.y + dy * e}, c);
+    }
+}
+// Rounded value tag on a price or time axis.
+static void axis_tag(ImDrawList *draw, ImVec2 min, ImVec2 max, ImU32 fill, ImU32 text_color,
+                     const std::string &value) {
+    draw->AddRectFilled(min, max, fill, 3);
+    auto size = ImGui::CalcTextSize(value.c_str());
+    draw->AddText({min.x + 6, (min.y + max.y - size.y) / 2}, text_color, value.c_str());
+}
 static std::string fmt(double n, int digits = 2) {
     if (!std::isfinite(n))
         return "--";
     char b[80];
     std::snprintf(b, sizeof(b), "%.*f", digits, n);
     return b;
+}
+// Sub-dollar prices and ratios such as RSP/SPY need more than cents to show movement.
+static std::string price_text(double n) {
+    return fmt(n, std::abs(n) < 1 ? 4 : 2);
+}
+static std::string compact_number(double n) {
+    const char *suffix = "";
+    for (auto [scale, s] : {std::pair{1e12, "T"}, {1e9, "B"}, {1e6, "M"}, {1e3, "K"}})
+        if (std::abs(n) >= scale) {
+            n /= scale;
+            suffix = s;
+            break;
+        }
+    return fmt(n, *suffix ? 2 : 0) + suffix;
 }
 static void text(ImU32 color, const std::string &s) {
     ImGui::PushStyleColor(ImGuiCol_Text, color);
@@ -28,20 +64,78 @@ static void text(ImU32 color, const std::string &s) {
 void theme() {
     ImGui::StyleColorsDark();
     auto &s = ImGui::GetStyle();
-    s.WindowRounding = s.FrameRounding = s.GrabRounding = s.TabRounding = s.PopupRounding = s.ChildRounding =
-        s.ScrollbarRounding = 0;
-    s.WindowBorderSize = 1;
-    s.FramePadding = {6, 4};
+    s.WindowRounding = s.PopupRounding = 6;
+    s.FrameRounding = s.GrabRounding = s.TabRounding = s.ChildRounding = 4;
+    s.ScrollbarRounding = 6;
+    s.WindowBorderSize = s.PopupBorderSize = 1;
+    s.FrameBorderSize = 0;
+    s.TabBarBorderSize = 1;
+    s.TabBarOverlineSize = 2;
+    s.WindowPadding = {10, 8};
+    s.FramePadding = {8, 4};
     s.ItemSpacing = {8, 6};
-    s.Colors[ImGuiCol_WindowBg] = ImGui::ColorConvertU32ToFloat4(rgba(18, 23, 31));
-    s.Colors[ImGuiCol_Text] = ImGui::ColorConvertU32ToFloat4(ink);
-    for (auto c : {ImGuiCol_Button, ImGuiCol_FrameBg, ImGuiCol_Header, ImGuiCol_TabSelected})
-        s.Colors[c] = ImGui::ColorConvertU32ToFloat4(grid);
-    s.Colors[ImGuiCol_CheckMark] = ImGui::ColorConvertU32ToFloat4(up);
+    s.ItemInnerSpacing = {6, 4};
+    s.ScrollbarSize = 10;
+    s.GrabMinSize = 8;
+    s.SeparatorTextBorderSize = 1;
+    s.DockingSeparatorSize = 1;
+    // Tabs already carry close buttons and drag handles; the window-menu arrow is clutter.
+    s.WindowMenuButtonPosition = ImGuiDir_None;
+    s.WindowTitleAlign = {0, .5f};
+    auto set = [&](ImGuiCol c, ImU32 v) { s.Colors[c] = ImGui::ColorConvertU32ToFloat4(v); };
+    set(ImGuiCol_Text, ink);
+    set(ImGuiCol_TextDisabled, muted);
+    set(ImGuiCol_WindowBg, surface);
+    set(ImGuiCol_ChildBg, rgba(0, 0, 0, 0));
+    set(ImGuiCol_PopupBg, rgba(19, 26, 35, 250));
+    set(ImGuiCol_Border, line_color);
+    set(ImGuiCol_BorderShadow, rgba(0, 0, 0, 0));
+    set(ImGuiCol_FrameBg, rgba(24, 32, 43));
+    set(ImGuiCol_FrameBgHovered, rgba(32, 42, 56));
+    set(ImGuiCol_FrameBgActive, rgba(38, 50, 66));
+    set(ImGuiCol_TitleBg, chrome);
+    set(ImGuiCol_TitleBgActive, rgba(17, 23, 31));
+    set(ImGuiCol_TitleBgCollapsed, chrome);
+    set(ImGuiCol_MenuBarBg, chrome);
+    set(ImGuiCol_ScrollbarBg, rgba(0, 0, 0, 0));
+    set(ImGuiCol_ScrollbarGrab, rgba(42, 54, 68));
+    set(ImGuiCol_ScrollbarGrabHovered, rgba(58, 72, 90));
+    set(ImGuiCol_ScrollbarGrabActive, rgba(72, 90, 112));
+    set(ImGuiCol_CheckMark, accent);
+    set(ImGuiCol_SliderGrab, accent);
+    set(ImGuiCol_SliderGrabActive, blue);
+    set(ImGuiCol_Button, rgba(26, 34, 45));
+    set(ImGuiCol_ButtonHovered, rgba(36, 48, 63));
+    set(ImGuiCol_ButtonActive, rgba(44, 60, 80));
+    set(ImGuiCol_Header, rgba(30, 44, 62));
+    set(ImGuiCol_HeaderHovered, rgba(28, 38, 51));
+    set(ImGuiCol_HeaderActive, rgba(36, 54, 76));
+    set(ImGuiCol_Separator, line_color);
+    set(ImGuiCol_SeparatorHovered, rgba(60, 90, 130));
+    set(ImGuiCol_SeparatorActive, accent);
+    set(ImGuiCol_ResizeGrip, rgba(0, 0, 0, 0));
+    set(ImGuiCol_ResizeGripHovered, rgba(60, 90, 130, 170));
+    set(ImGuiCol_ResizeGripActive, accent);
+    set(ImGuiCol_InputTextCursor, ink);
+    set(ImGuiCol_Tab, chrome);
+    set(ImGuiCol_TabHovered, rgba(30, 40, 53));
+    set(ImGuiCol_TabSelected, surface);
+    set(ImGuiCol_TabSelectedOverline, accent);
+    set(ImGuiCol_TabDimmed, chrome);
+    set(ImGuiCol_TabDimmedSelected, surface);
+    set(ImGuiCol_TabDimmedSelectedOverline, rgba(0, 0, 0, 0));
+    set(ImGuiCol_DockingPreview, rgba(80, 150, 240, 90));
+    set(ImGuiCol_DockingEmptyBg, bg);
+    set(ImGuiCol_TableHeaderBg, rgba(19, 26, 35));
+    set(ImGuiCol_TableBorderStrong, line_color);
+    set(ImGuiCol_TableBorderLight, rgba(27, 35, 45));
+    set(ImGuiCol_TableRowBgAlt, rgba(255, 255, 255, 6));
+    set(ImGuiCol_TextSelectedBg, rgba(80, 150, 240, 80));
+    set(ImGuiCol_NavCursor, accent);
+    set(ImGuiCol_ModalWindowDimBg, rgba(5, 8, 12, 150));
 }
-static std::string title(const Panel &p, const State &s) {
-    return display_symbol(p.symbol) + " " + timeframes[p.tf] + (p.id == s.active ? " *" : "") + "###chart_" +
-           std::to_string(p.id);
+static std::string title(const Panel &p) {
+    return display_symbol(p.symbol) + "  " + timeframes[p.tf] + "###chart_" + std::to_string(p.id);
 }
 static std::string watchlist_title(const State &s, const WatchlistWindow &w) {
     return s.lists[size_t(w.list)].name + " / Watchlist###watchlist_" + std::to_string(w.id);
@@ -80,7 +174,7 @@ static void layout(State &s, ImGuiID dock) {
         split(main, int(s.panels.size()), s.layout != "Rows");
     }
     for (size_t i = 0; i < s.panels.size(); ++i)
-        ImGui::DockBuilderDockWindow(title(*s.panels[i], s).c_str(), slots[i]);
+        ImGui::DockBuilderDockWindow(title(*s.panels[i]).c_str(), slots[i]);
     ImGui::DockBuilderFinish(dock);
     s.relayout = false;
 }
@@ -108,14 +202,15 @@ static void row(State &s, const std::string &symbol, int list_index) {
         auto it = std::find(list.symbols.begin(), list.symbols.end(), symbol);
         if (ImGui::BeginMenu("Copy to list")) {
             for (size_t i = 0; i < s.lists.size(); ++i)
-                if (int(i) != list_index && ImGui::MenuItem(s.lists[i].name.c_str())) {
+                if (int(i) != list_index && s.lists[i].source.empty() &&
+                    ImGui::MenuItem(s.lists[i].name.c_str())) {
                     auto &symbols = s.lists[i].symbols;
                     if (std::find(symbols.begin(), symbols.end(), symbol) == symbols.end())
                         symbols.push_back(symbol);
                 }
             ImGui::EndMenu();
         }
-        if (it != list.symbols.end()) {
+        if (it != list.symbols.end() && list.source.empty()) {
             if (ImGui::MenuItem("Move up", nullptr, false, it != list.symbols.begin()))
                 std::iter_swap(it, it - 1);
             if (ImGui::MenuItem("Move down", nullptr, false, it + 1 != list.symbols.end()))
@@ -134,20 +229,53 @@ static void row(State &s, const std::string &symbol, int list_index) {
         if (now() - q.fetched < 600 && !s.quote_errors.count(symbol))
             color = q.change >= 0 ? up : down;
     }
+    auto row_min = ImGui::GetItemRectMin(), row_max = ImGui::GetItemRectMax();
+    if (chosen)
+        ImGui::GetWindowDrawList()->AddRectFilled({row_min.x - 4, row_min.y}, {row_min.x - 2, row_max.y}, accent);
+    float symbol_end = ImGui::GetCursorPosX() + ImGui::CalcTextSize(display_symbol(symbol).c_str()).x;
     float change_x = std::max(60.f, right - ImGui::CalcTextSize(label.c_str()).x - 2);
-    if (it != s.quotes.end() && fresh_extended(it->second, now()) && change_x > 115) {
-        ImGui::SameLine(change_x - 40);
-        text(gold, it->second.extended->session);
+    float change_column = ImGui::CalcTextSize("+00.00%").x;
+    bool extended = it != s.quotes.end() && fresh_extended(it->second, now());
+    if (extended)
+        symbol_end += ImGui::CalcTextSize(" post").x;
+    if (it != s.quotes.end() && std::isfinite(it->second.price)) {
+        auto price = price_text(it->second.price);
+        float price_x = right - change_column - 16 - ImGui::CalcTextSize(price.c_str()).x;
+        if (price_x > symbol_end + 10) {
+            ImGui::SameLine(price_x);
+            text(ink, price);
+            hovered |= ImGui::IsItemHovered();
+        }
+    }
+    if (extended) {
+        // Pre/post-market marker sits beside the ticker, away from the numeric columns.
+        ImGui::SameLine(symbol_end - ImGui::CalcTextSize(" post").x + 6);
+        text(gold, it->second.extended->session == "Pre" ? "pre" : "post");
         hovered |= ImGui::IsItemHovered();
     }
     ImGui::SameLine(change_x);
     text(color, label);
     if (hovered || ImGui::IsItemHovered()) {
+        auto &profile = s.profile(symbol);
         ImGui::BeginTooltip();
         ImGui::TextUnformatted(symbol.c_str());
+        if (profile.loaded) {
+            ImGui::SameLine();
+            text(ink, profile.data.name);
+            // Stocks list a sector; funds, futures, indices and crypto show their instrument type.
+            std::string detail = profile.data.sector.empty() ? profile.data.type : profile.data.sector;
+            if (!profile.data.industry.empty())
+                detail += " / " + profile.data.industry;
+            if (!detail.empty())
+                text(muted, detail);
+        } else if (profile.loading)
+            text(faint, "Loading name...");
+        else if (!profile.error.empty())
+            text(faint, profile.error);
+        ImGui::Separator();
         if (it != s.quotes.end()) {
             text(ink,
-                 fmt(it->second.price) + " / " + label +
+                 price_text(it->second.price) + " / " + label +
                      (it->second.rolling ? " over 24 hours" : " regular session / versus previous close"));
             text(muted, it->second.source + " / As of " + local_date(it->second.asof));
             if (it->second.extended) {
@@ -274,22 +402,35 @@ static void main_menu(State &s) {
         add_panel_menu(s);
         ImGui::EndMenu();
     }
-    ImGui::EndMainMenuBar();
-}
-static void watchlist(State &s, WatchlistWindow &w) {
-    ImGui::SetNextWindowSize({300, 520}, ImGuiCond_FirstUseEver);
-    if (w.focus) {
-        ImGui::SetNextWindowFocus();
-        w.focus = false;
-    }
-    if (!ImGui::Begin(watchlist_title(s, w).c_str(), &w.open, ImGuiWindowFlags_NoCollapse)) {
-        ImGui::End();
-        return;
-    }
-    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
-        s.selected_list = w.list;
+    // Build status lives at the right edge of the menu bar rather than inside every watchlist.
     const bool newer = s.available_build > build::number;
-    text(newer ? gold : muted, std::string("v") + build::version);
+    std::string version = std::string("v") + build::version;
+    float width = ImGui::CalcTextSize(version.c_str()).x;
+#ifdef __EMSCRIPTEN__
+    const char *update = "Reload to update";
+#else
+    const char *update = "Restart to update";
+#endif
+    if (newer)
+        width += ImGui::CalcTextSize(update).x + ImGui::GetStyle().ItemSpacing.x + 2 * ImGui::GetStyle().FramePadding.x;
+    float x = ImGui::GetWindowContentRegionMax().x - width - 8;
+    if (x > ImGui::GetCursorPosX())
+        ImGui::SetCursorPosX(x);
+    if (newer) {
+#ifdef __EMSCRIPTEN__
+        ImGui::PushStyleColor(ImGuiCol_Text, gold);
+        bool reload = ImGui::MenuItem(update);
+        ImGui::PopStyleColor();
+        if (reload) {
+            s.ini = ImGui::SaveIniSettingsToMemory();
+            s.save(true);
+            EM_ASM({ Module.chartroomReload(); });
+        }
+#else
+        text(gold, update);
+#endif
+    }
+    text(newer ? gold : faint, version);
     if (ImGui::IsItemHovered()) {
         ImGui::BeginTooltip();
         ImGui::Text("Built %s", local_date(parse_time(build::timestamp)).c_str());
@@ -302,41 +443,22 @@ static void watchlist(State &s, WatchlistWindow &w) {
         ImGui::TextUnformatted("Checks for a newer build every minute.");
         ImGui::EndTooltip();
     }
-    if (newer) {
-        ImGui::SameLine();
-#ifdef __EMSCRIPTEN__
-        if (ImGui::SmallButton("Reload")) {
-            s.ini = ImGui::SaveIniSettingsToMemory();
-            s.save(true);
-            EM_ASM({ Module.chartroomReload(); });
-        }
-#else
-        text(gold, "Restart to update");
-#endif
+    ImGui::EndMainMenuBar();
+}
+static void watchlist(State &s, WatchlistWindow &w) {
+    ImGui::SetNextWindowSize({300, 520}, ImGuiCond_FirstUseEver);
+    if (w.focus) {
+        ImGui::SetNextWindowFocus();
+        w.focus = false;
     }
-    auto &jump = w.jump;
-    float go_width = ImGui::CalcTextSize("Go").x + 2 * ImGui::GetStyle().FramePadding.x;
-    ImGui::SetNextItemWidth(
-        std::max(60.f, ImGui::GetContentRegionAvail().x - go_width - ImGui::GetStyle().ItemSpacing.x));
-    bool go =
-        ImGui::InputTextWithHint("##jump", "Go to symbol", jump, sizeof(jump),
-                                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsUppercase);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Enter a symbol to load it in the active chart.");
-    ImGui::SameLine();
-    go |= ImGui::Button("Go");
-    if (go) {
-        try {
-            auto symbol = normalize_symbol(jump);
-            s.select(s.current(), symbol, s.current().tf);
-            jump[0] = 0;
-            s.notice.clear();
-            ImGui::SetWindowFocus(title(s.current(), s).c_str());
-        } catch (const std::exception &e) {
-            s.notice = e.what();
-        }
+    w.measured = true;
+    w.shown.clear();
+    if (!ImGui::Begin(watchlist_title(s, w).c_str(), &w.open, ImGuiWindowFlags_NoCollapse)) {
+        ImGui::End();
+        return;
     }
-    ImGui::Separator();
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+        s.selected_list = w.list;
     ImGui::SetNextItemWidth(std::max(60.f, ImGui::GetContentRegionAvail().x - 55));
     if (ImGui::BeginCombo("##list", s.lists[size_t(w.list)].name.c_str())) {
         for (size_t i = 0; i < s.lists.size(); ++i)
@@ -397,15 +519,32 @@ static void watchlist(State &s, WatchlistWindow &w) {
         ImGui::EndDisabled();
         if (!error.empty())
             text(gold, error);
-        ImGui::TextUnformatted("Right-click a ticker to reorder or remove it.");
+        ImGui::TextUnformatted(s.lists[size_t(w.list)].source.empty()
+                                   ? "Right-click a ticker to reorder or remove it."
+                                   : "Live lists update from their source; copy tickers to edit them.");
         ImGui::EndPopup();
     }
     auto &input = w.input;
-    ImGui::SetNextItemWidth(-1);
-    if (ImGui::InputTextWithHint("##symbol", "+ Add to list / Enter", input, sizeof(input),
-                                 ImGuiInputTextFlags_EnterReturnsTrue)) {
+    auto &current = s.lists[size_t(w.list)];
+    if (!current.source.empty()) {
+        std::string status = std::to_string(current.symbols.size()) + " stocks";
+        if (current.loading)
+            status += " / updating";
+        else if (!current.asof.empty())
+            status += " / live, " + current.asof;
+        text(faint, status);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", live_list_url(current.source).c_str());
+        if (!current.error.empty()) {
+            ImGui::PushTextWrapPos(0);
+            text(gold, current.error);
+            ImGui::PopTextWrapPos();
+        }
+    } else if (ImGui::SetNextItemWidth(-1),
+               ImGui::InputTextWithHint("##symbol", "+ Add to list / Enter", input, sizeof(input),
+                                        ImGuiInputTextFlags_EnterReturnsTrue)) {
         try {
-            auto symbol = normalize_symbol(input);
+            auto symbol = resolve_symbol(input);
             auto &symbols = s.lists[size_t(w.list)].symbols;
             if (std::find(symbols.begin(), symbols.end(), symbol) == symbols.end())
                 symbols.push_back(symbol);
@@ -424,13 +563,27 @@ static void watchlist(State &s, WatchlistWindow &w) {
                 "market proxies, not economic releases such as CPI or jobs data.");
     }
     ImGui::Separator();
-    text(muted, "Symbol");
-    ImGui::SameLine(std::max(70.f, ImGui::GetContentRegionAvail().x - 65));
-    text(muted, "Chg %");
+    {
+        float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+        float change_column = ImGui::CalcTextSize("+00.00%").x;
+        text(faint, "Symbol");
+        float last_x = right - change_column - 16 - ImGui::CalcTextSize("Last").x;
+        if (last_x > 80) {
+            ImGui::SameLine(last_x);
+            text(faint, "Last");
+        }
+        ImGui::SameLine(std::max(70.f, right - ImGui::CalcTextSize("Chg %").x - 2));
+        text(faint, "Chg %");
+    }
     // Context actions may mutate the list while rows are being drawn.
     auto symbols = s.lists[size_t(w.list)].symbols;
-    for (auto &symbol : symbols)
-        row(s, symbol, w.list);
+    ImGuiListClipper clipper;
+    clipper.Begin(int(symbols.size()));
+    while (clipper.Step())
+        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+            row(s, symbols[size_t(i)], w.list);
+            w.shown.push_back(symbols[size_t(i)]);
+        }
     if (!s.notice.empty()) {
         ImGui::Separator();
         ImGui::PushTextWrapPos(0);
@@ -492,6 +645,7 @@ static void indicators(Panel &p) {
         ImGui::SameLine();
         auto name = s.kind == "RIBBON" ? "MA ribbon colored bars"
                     : s.kind == "OBV"  ? "OBV"
+                    : s.kind == "AD"   ? "A/D " + std::to_string(s.period)
                                        : s.kind + " " + std::to_string(s.period);
         bool open = ImGui::TreeNode((name + "###settings").c_str());
         ImGui::SameLine();
@@ -515,13 +669,19 @@ static void indicators(Panel &p) {
                                    "only when their source candle completes.");
             } else {
                 if (s.kind == "SMA" || s.kind == "EMA" || s.kind == "VWMA" || s.kind == "DONCHIAN" ||
-                    s.kind == "KC" || s.kind == "STOCH" || s.kind == "ROC" || s.kind == "OBV")
+                    s.kind == "KC" || s.kind == "STOCH" || s.kind == "ROC" || s.kind == "OBV" || s.kind == "AD")
                     p.dirty |= edit_color("Line color", s.color);
                 if (s.kind != "OBV")
                     p.dirty |= ImGui::InputInt(s.kind == "MACD"     ? "Fast period"
                                                : s.kind == "PIVOTS" ? "N bars each side"
+                                               : s.kind == "AD"     ? "Half-life"
                                                                     : "Period",
                                                &s.period);
+                if (s.kind == "AD")
+                    ImGui::TextWrapped("Balance of accumulation and distribution evidence, -100 to +100. Up or "
+                                       "down closes of at least 0.2%% on volume above the prior 10-bar average "
+                                       "count, weighted by relative volume and the move in 20-bar ATR units. "
+                                       "Daily charts with a 20-bar half-life show the A+ to E grade.");
                 if (s.kind == "PIVOTS") {
                     p.dirty |= ImGui::Checkbox("Swing highs", &s.show_highs);
                     ImGui::SameLine();
@@ -575,29 +735,107 @@ static void indicators(Panel &p) {
     }
     ImGui::EndPopup();
 }
+// Change versus the previous close: the sidebar quote when it is fresh, otherwise the prior bar.
+static std::optional<double> session_change(State &s, const Panel &p) {
+    auto it = s.quotes.find(p.symbol);
+    if (it != s.quotes.end() && now() - it->second.fetched < 600 && !s.quote_errors.count(p.symbol) &&
+        std::isfinite(it->second.change))
+        return it->second.change;
+    if (p.bars.size() < 2 || !(p.bars[p.bars.size() - 2].close > 0))
+        return std::nullopt;
+    return (p.bars.back().close / p.bars[p.bars.size() - 2].close - 1) * 100;
+}
+static bool segment(const char *label, bool selected) {
+    if (selected) {
+        ImGui::PushStyleColor(ImGuiCol_Button, rgba(36, 56, 82));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgba(42, 64, 92));
+        ImGui::PushStyleColor(ImGuiCol_Text, ink);
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Button, rgba(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, rgba(30, 40, 53));
+        ImGui::PushStyleColor(ImGuiCol_Text, muted);
+    }
+    bool pressed = ImGui::Button(label);
+    ImGui::PopStyleColor(3);
+    return pressed;
+}
+static void pnf_latest(Panel &p) {
+    double n = double(p.pnf_chart.columns.size());
+    p.pnf_view.count = std::max(1., std::min(p.pnf_view.count, n / View::latest_position));
+    p.pnf_view.first = n - .5 - p.pnf_view.count * View::latest_position;
+}
 static void toolbar(State &s, Panel &p) {
-    text(ink, display_symbol(p.symbol) + (p.bars.empty() ? "" : "  " + fmt(p.bars.back().close)));
-    ImGui::SameLine();
-    int tf = p.tf;
-    ImGui::SetNextItemWidth(64);
-    if (ImGui::Combo("##tf", &tf, timeframes, 4))
-        s.select(p, p.symbol, tf);
-    ImGui::SameLine();
-    if (ImGui::Button("Latest"))
-        p.view.fit(p.bars.size());
     auto &series = s.ensure(p.symbol, p.tf);
-    std::string updated = "Updated --";
+    const float base_size = ImGui::GetFontSize();
+    ImGui::PushFont(nullptr, 26);
+    {
+        // The symbol is an inline field: click it, type a ticker, press Enter.
+        auto id = ImGui::GetID("##symbol");
+        bool editing = ImGui::GetActiveID() == id;
+        if (!editing)
+            std::snprintf(p.jump, sizeof(p.jump), "%s", display_symbol(p.symbol).c_str());
+        float width = std::max(ImGui::CalcTextSize(p.jump).x, ImGui::CalcTextSize(editing ? "WWWWWW" : "W").x) +
+                      2 * ImGui::GetStyle().FramePadding.x;
+        ImGui::SetNextItemWidth(width);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, editing ? rgba(24, 32, 43) : rgba(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, rgba(30, 40, 53));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {6, 0});
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() - 6);
+        if (ImGui::InputText("##symbol", p.jump, sizeof(p.jump),
+                             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsUppercase |
+                                 ImGuiInputTextFlags_AutoSelectAll)) {
+            try {
+                s.select(p, resolve_symbol(p.jump), p.tf);
+                s.notice.clear();
+            } catch (const std::exception &e) {
+                s.notice = e.what();
+            }
+        }
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(2);
+        if (ImGui::IsItemHovered() && !editing) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
+            ImGui::PushFont(nullptr, base_size);
+            ImGui::SetTooltip("Click to change the symbol, then press Enter.\nCombine tickers with + - * / and "
+                              "parentheses, e.g. RSP/SPY or (AAPL+MSFT)/2.\nPut spaces around minus: SPY - QQQ.");
+            ImGui::PopFont();
+        }
+    }
+    if (!p.bars.empty()) {
+        ImGui::SameLine(0, 4);
+        text(ink, price_text(p.bars.back().close));
+    }
+    ImGui::PopFont();
+    if (!p.bars.empty()) {
+        if (auto change = session_change(s, p)) {
+            double previous = p.bars.back().close / (1 + *change / 100);
+            double delta = p.bars.back().close - previous;
+            ImGui::SameLine(0, 10);
+            float y = ImGui::GetCursorPosY();
+            ImGui::SetCursorPosY(y + 7);
+            text(*change >= 0 ? up : down, (delta >= 0 ? "+" : "") + fmt(delta, std::abs(previous) < 1 ? 4 : 2) + "  (" +
+                                                (*change >= 0 ? "+" : "") + fmt(*change) + "%)");
+        }
+    }
+    std::string updated = "--";
     if (series.loaded && series.history.fetched > 0)
-        updated = "Updated " + local_date(series.history.fetched, "%Y-%m-%d %H:%M:%S %Z");
+        updated = local_date(series.history.fetched, "%H:%M:%S");
+    updated = (s.offline ? "Offline / " : series.loading ? "Refreshing / " : "Updated ") + updated;
+    ImGui::SameLine();
     float updated_x =
         ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(updated.c_str()).x;
     float last_right = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x;
-    if (updated_x >= last_right + ImGui::GetStyle().ItemSpacing.x)
+    if (updated_x >= last_right + ImGui::GetStyle().ItemSpacing.x) {
         ImGui::SameLine(updated_x);
-    text(muted, updated);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 7);
+    } else
+        ImGui::NewLine();
+    text(!series.error.empty() ? gold : faint, updated);
     if (ImGui::IsItemHovered()) {
         ImGui::BeginTooltip();
         ImGui::TextUnformatted("Last successful chart data refresh.");
+        if (series.loaded && series.history.fetched > 0)
+            ImGui::TextUnformatted(local_date(series.history.fetched, "%Y-%m-%d %H:%M:%S %Z").c_str());
         if (series.loaded) {
             auto time = series.history.meta.find("regularMarketTime");
             if (time != series.history.meta.end() && time->is_number_integer() && time->get<Time>() > 0)
@@ -611,17 +849,31 @@ static void toolbar(State &s, Panel &p) {
             ImGui::TextUnformatted("Last refresh failed; showing cached data.");
         ImGui::EndTooltip();
     }
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, {2, ImGui::GetStyle().ItemSpacing.y});
+    for (int tf = 0; tf < 4; ++tf) {
+        if (tf)
+            ImGui::SameLine();
+        ImGui::PushID(tf);
+        if (segment(timeframes[tf], tf == p.tf) && tf != p.tf)
+            s.select(p, p.symbol, tf);
+        ImGui::PopID();
+    }
+    ImGui::PopStyleVar();
+    auto divider = [] {
+        ImGui::SameLine(0, 10);
+        auto pos = ImGui::GetCursorScreenPos();
+        float h = ImGui::GetFrameHeight();
+        ImGui::GetWindowDrawList()->AddLine({pos.x, pos.y + 4}, {pos.x, pos.y + h - 4}, line_color);
+        ImGui::Dummy({1, h});
+        ImGui::SameLine(0, 10);
+    };
+    divider();
     if (ImGui::Button("Indicators"))
         ImGui::OpenPopup("Indicators");
     indicators(p);
     ImGui::SameLine();
     if (ImGui::Button("View"))
         ImGui::OpenPopup("View");
-    ImGui::SameLine();
-    ImGui::BeginDisabled(series.loading || s.offline);
-    if (ImGui::Button("Refresh"))
-        s.refresh(p);
-    ImGui::EndDisabled();
     drawing_toolbar(s, p);
     ImGui::SameLine();
     if (ImGui::Button("Facts")) {
@@ -629,6 +881,20 @@ static void toolbar(State &s, Panel &p) {
         s.fundamentals.open = s.fundamentals.focus = s.fundamentals.follow = true;
         s.fundamentals.symbol = p.symbol;
     }
+    divider();
+    ImGui::BeginDisabled(series.loading || s.offline);
+    if (ImGui::Button("Refresh"))
+        s.refresh(p);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Latest")) {
+        if (p.point_figure)
+            pnf_latest(p);
+        else
+            p.view.fit(p.bars.size());
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Jump to the newest bar (double-click the chart or press End).");
     if (p.option_marker) {
         auto &m = *p.option_marker;
         text(muted, std::string(m.puts ? "Put " : "Call ") + fmt(m.strike) + " / " + m.expiry);
@@ -643,17 +909,81 @@ static void toolbar(State &s, Panel &p) {
         if (ImGui::SmallButton("Clear option"))
             p.option_marker.reset();
     }
+    if (s.active == p.id && !s.notice.empty())
+        text(gold, s.notice);
     if (ImGui::BeginPopup("View")) {
-        int style = !p.candles ? 2 : p.ohlc ? 1 : 0;
-        const char *styles[] = {"Candlesticks", "OHLC bars", "Line"};
-        if (ImGui::Combo("Chart style", &style, styles, 3)) {
-            p.candles = style != 2;
-            p.ohlc = style == 1;
+        int style = p.point_figure ? 3 : !p.candles ? 2 : p.ohlc ? 1 : 0;
+        const char *styles[] = {"Candlesticks", "OHLC bars", "Line", "Point & figure"};
+        if (ImGui::Combo("Chart style", &style, styles, 4)) {
+            if (style == 3) {
+                p.pnf_fit = !p.point_figure;
+                p.point_figure = true;
+            } else {
+                p.point_figure = false;
+                p.candles = style != 2;
+                p.ohlc = style == 1;
+            }
+            p.dirty = true;
+        }
+        if (p.point_figure) {
+            // Every change rebuilds the columns and returns to the latest one.
+            auto &f = p.pnf;
+            bool changed = false;
+            int boxes = f.logarithmic ? 0 : 1;
+            const char *box_kinds[] = {"Logarithmic (percent)", "Arithmetic (price)"};
+            if (ImGui::Combo("Box scale", &boxes, box_kinds, 2)) {
+                f.logarithmic = boxes == 0;
+                changed = true;
+            }
+            ImGui::SetNextItemWidth(120);
+            if (f.logarithmic) {
+                changed |= ImGui::InputDouble("Box size (%)", &f.percent, .25, 1, "%.2f");
+                f.percent = std::clamp(f.percent, .05, 50.);
+                for (double preset : {.5, 1., 2., 3., 5.}) {
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton((fmt(preset, preset < 1 ? 1 : 0) + "%").c_str())) {
+                        f.percent = preset;
+                        changed = true;
+                    }
+                }
+            } else {
+                bool automatic = f.box <= 0;
+                if (ImGui::Checkbox("Traditional box for the price", &automatic)) {
+                    f.box = automatic ? 0 : pnf_traditional_box(p.bars.empty() ? 100 : p.bars.back().close);
+                    changed = true;
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Classic scale: $1 boxes from $20 to $100, $2 to $200, $4 to $500, ...");
+                if (!automatic) {
+                    ImGui::SetNextItemWidth(120);
+                    changed |= ImGui::InputDouble("Box size", &f.box, 0, 0, "%.4g");
+                    f.box = std::max(f.box, 1e-6);
+                } else
+                    ImGui::TextDisabled("Box size %s", price_text(p.pnf_chart.step).c_str());
+            }
+            ImGui::SetNextItemWidth(120);
+            changed |= ImGui::InputInt("Reversal (boxes)", &f.reversal);
+            f.reversal = std::clamp(f.reversal, 1, 10);
+            int method = f.closes ? 1 : 0;
+            const char *methods[] = {"High / low", "Close only"};
+            if (ImGui::Combo("Prices", &method, methods, 2)) {
+                f.closes = method == 1;
+                changed = true;
+            }
+            if (changed) {
+                p.pnf_fit = true;
+                p.dirty = true;
+            }
+            ImGui::TextDisabled("X: rising boxes. O: falling. 1-9, A-C: first box of each month.");
+            ImGui::TextDisabled("Shaded box: double-top buy or double-bottom sell breakout.");
+            ImGui::TextDisabled("Indicators, drawings and volume are hidden in this style.");
         }
         int scale = p.logarithmic ? 1 : 0;
         const char *scales[] = {"Linear", "Logarithmic"};
+        ImGui::BeginDisabled(p.point_figure);
         if (ImGui::Combo("Price scale", &scale, scales, 2))
             p.logarithmic = scale == 1;
+        ImGui::EndDisabled();
         ImGui::Checkbox("Volume", &p.volume);
         ImGui::Checkbox("Earnings markers", &p.earnings);
         bool linked = s.option_target() == &p;
@@ -781,7 +1111,9 @@ static void chart(State &s, Panel &p) {
     draw->AddRectFilled(origin, {origin.x + size.x, origin.y + size.y}, bg);
     float left = origin.x + 16, right = origin.x + size.x - 102 - (ladder ? 90 : 0), top = origin.y + 26,
           foot = origin.y + size.y - 28;
-    int pane_count = p.volume ? 1 : 0;
+    // Computed symbols such as RSP/SPY have no volume of their own.
+    const bool volume = p.volume && !is_expression(p.symbol);
+    int pane_count = volume ? 1 : 0;
     for (auto &r : p.results)
         pane_count += r.pane;
     float ph = pane_count ? std::min(100.f, (size.y - 68) * .48f / pane_count) : 0;
@@ -849,9 +1181,20 @@ static void chart(State &s, Panel &p) {
         if (std::isfinite(y) && std::isfinite(y2))
             draw->AddLine({x, y}, {x2, y2}, c, w);
     };
+    {
+        // A faint symbol watermark identifies each chart in dense layouts.
+        auto mark = display_symbol(p.symbol) + " / " + timeframes[p.tf];
+        float font_size = std::clamp((right - left) * .07f, 28.f, 72.f);
+        auto *font = ImGui::GetFont();
+        auto extent = font->CalcTextSizeA(font_size, FLT_MAX, 0, mark.c_str());
+        if (extent.x < (right - left) * .8f && bottom - top > font_size * 2)
+            draw->AddText(font, font_size,
+                          {(left + right - extent.x) / 2, (top + bottom - extent.y) / 2},
+                          rgba(255, 255, 255, 9), mark.c_str());
+    }
     auto time_ticks = time_grid(p.bars, p.view, p.tf == 1 ? 14400 : duration(intervals[p.tf]), pw, true);
     for (const auto &tick : time_ticks)
-        line(px(tick.index), top, px(tick.index), foot - 8, tick.major ? rgba(46, 59, 71) : grid);
+        line(px(tick.index), top, px(tick.index), foot - 8, tick.major ? rgba(33, 44, 56) : grid);
     auto g = log_scale ? log_price_grid(lo, hi, bottom - top) : price_grid(lo, hi, bottom - top);
     double latest = p.bars.back().close;
     float ly = latest >= lo && latest <= hi ? py(latest) : -1e6f;
@@ -859,7 +1202,7 @@ static void chart(State &s, Panel &p) {
         float y = py(price);
         bool major = log_scale ? std::abs(std::log10(price) - std::round(std::log10(price))) < 1e-9
                                : std::abs(price / g.major - std::round(price / g.major)) < 1e-9;
-        line(left, y, right, y, major ? rgba(46, 59, 71) : grid);
+        line(left, y, right, y, major ? rgba(33, 44, 56) : grid);
         if (std::abs(y - ly) > 22 && !(over && my <= bottom && std::abs(y - my) < 22))
             label(right + 10, y - 8,
                   price_label(price, log_scale && std::log10(hi) - std::log10(lo) >= 1 ? price : g.step),
@@ -929,18 +1272,25 @@ static void chart(State &s, Panel &p) {
                     curve(r.lines[j], py, r.colors[j]);
         }
     draw->PopClipRect();
-    std::string legend = p.logarithmic ? (log_scale ? "Log" : "Linear (log needs positive prices)") : "";
-    for (auto &r : p.results)
-        if (!r.pane) {
-            if (!legend.empty())
-                legend += " / ";
-            legend += r.name;
-        }
+    // Legend: each overlay in its own color, with the scale mode first.
     draw->PushClipRect(origin, {right, top}, true);
-    label(left + 4, origin.y + 3, legend, blue);
+    {
+        float x = left + 4;
+        auto item = [&](const std::string &t, ImU32 c) {
+            label(x, origin.y + 4, t, c);
+            x += ImGui::CalcTextSize(t.c_str()).x + 14;
+        };
+        if (p.logarithmic)
+            item(log_scale ? "LOG" : "Linear (log needs positive prices)", faint);
+        for (auto &r : p.results)
+            if (!r.pane)
+                item(r.name, r.colored_bars || r.colors.empty() ? blue : r.colors[0]);
+    }
     draw->PopClipRect();
-    if (p.volume) {
-        label(left + 4, bottom + 2, "Volume");
+    auto pane_rule = [&](float y) { line(left, y, right + 100, y, line_color); };
+    if (volume) {
+        pane_rule(bottom + 1);
+        label(left + 4, bottom + 3, "Volume", faint);
         double maxvol = 0;
         bool gaps = false;
         for (int i = a; i < b; ++i) {
@@ -950,7 +1300,7 @@ static void chart(State &s, Panel &p) {
                 gaps = true;
         }
         if (gaps)
-            label(left + 70, bottom + 2, "/ gaps unavailable");
+            label(left + 64, bottom + 3, "/ gaps unavailable", faint);
         draw->PushClipRect({left, bottom + 18}, {right, bottom + ph}, true);
         if (maxvol > 0)
             for (int i = a; i < b; ++i)
@@ -961,13 +1311,16 @@ static void chart(State &s, Panel &p) {
                 }
         draw->PopClipRect();
     }
-    int pane = p.volume ? 1 : 0;
+    int pane = volume ? 1 : 0;
     for (auto &r : p.results)
         if (r.pane) {
             float pt = bottom + pane * ph + 18, pb = bottom + (pane + 1) * ph - 4;
-            bool rsi = r.name.starts_with("RSI"), stochastic = r.name.starts_with("STOCH");
-            bool bounded = rsi || stochastic;
-            double low = 0, high = bounded ? 100 : 0;
+            bool rsi = r.name.starts_with("RSI"), stochastic = r.name.starts_with("STOCH"),
+                 ad = r.name.starts_with("A/D");
+            bool bounded = rsi || stochastic || ad;
+            // A/D guides sit at the E and A- grade boundaries of its -100..+100 balance.
+            double lower = rsi ? 30. : stochastic ? 20. : -30.68, upper = rsi ? 70. : stochastic ? 80. : 37.04;
+            double low = ad ? -100 : 0, high = bounded ? 100 : 0;
             if (!bounded) {
                 for (auto &values : r.lines)
                     for (int i = a; i < b; ++i)
@@ -987,11 +1340,19 @@ static void chart(State &s, Panel &p) {
                 high += pad;
             }
             auto y = [&](double v) { return pb - float((v - low) / (high - low)) * std::max(1.f, pb - pt); };
-            line(left, pt - 16, right, pt - 16, grid);
-            label(left + 4, pt - 16, r.name);
-            for (double level : {rsi ? 30. : stochastic ? 20. : low, rsi ? 70. : stochastic ? 80. : high}) {
-                line(left, y(level), right, y(level), grid);
-                label(right + 10, y(level) - 8, fmt(level));
+            pane_rule(pt - 17);
+            label(left + 4, pt - 15, r.name, r.colors.empty() ? faint : r.colors[0]);
+            if (bounded) {
+                draw->AddRectFilled({left, y(upper)}, {right, y(lower)}, rgba(80, 150, 240, 10));
+                if (ad)
+                    line(left, y(0), right, y(0), grid);
+            }
+            for (double level : {bounded ? lower : low, bounded ? upper : high}) {
+                if (bounded)
+                    dashed(draw, {left, y(level)}, {right, y(level)}, rgba(46, 60, 76), 3, 3);
+                else
+                    line(left, y(level), right, y(level), grid);
+                label(right + 10, y(level) - 8, ad ? (level > 0 ? "A-" : "E") : fmt(level), faint);
             }
             draw->PushClipRect({left, pt}, {right, pb}, true);
             for (int i = a; i < b && !r.histogram.empty(); ++i) {
@@ -1009,8 +1370,10 @@ static void chart(State &s, Panel &p) {
             ++pane;
         }
     if (ly >= top && ly <= bottom) {
-        draw->AddRectFilled({right + 1, ly - 11}, {right + 100, ly + 12}, rgba(33, 64, 94));
-        label(right + 7, ly - 9, fmt(latest), ink);
+        auto change = session_change(s, p);
+        ImU32 tone = !change ? accent : *change >= 0 ? up : down;
+        dashed(draw, {left, ly}, {right, ly}, with_alpha(tone, 150), 2, 3);
+        axis_tag(draw, {right + 2, ly - 11}, {right + 98, ly + 11}, tone, rgba(8, 12, 18), price_text(latest));
     }
     if (event_height) {
         auto &f = s.company(p.symbol).data;
@@ -1104,25 +1467,55 @@ static void chart(State &s, Panel &p) {
     render_drawings(s, p, drawing_plot);
     option_overlay(s, p, drawing_plot);
     int hover = -1;
+    const ImU32 cross = rgba(140, 160, 182, 150), tag = rgba(46, 60, 78);
     if (over) {
         hover = int(std::floor(p.view.first + (mx - left) / pw * p.view.count));
-        float cross_x = hover >= 0 && hover < int(p.bars.size()) ? px(hover) : mx;
-        if (cross_x >= left && cross_x <= right)
-            line(cross_x, top, cross_x, foot - 8, muted);
-        if (my <= bottom) {
-            line(left, my, right, my, muted);
-            double price = scale.price((bottom - my) / (bottom - top));
-            draw->AddRectFilled({right + 1, my - 11}, {right + 100, my + 12}, grid);
-            label(right + 7, my - 9, fmt(price), ink);
+        bool on_bar = hover >= 0 && hover < int(p.bars.size());
+        float cross_x = on_bar ? px(hover) : mx;
+        if (cross_x >= left && cross_x <= right) {
+            dashed(draw, {cross_x, top}, {cross_x, foot - 2}, cross);
+            if (on_bar) {
+                auto when = local_date(p.bars[hover].time, p.tf < 2 ? "%a %Y-%m-%d %H:%M" : "%a %Y-%m-%d");
+                float w = ImGui::CalcTextSize(when.c_str()).x + 12;
+                float x = std::clamp(cross_x - w / 2, left, right - w);
+                axis_tag(draw, {x, foot}, {x + w, foot + 21}, tag, ink, when);
+            }
         }
+        if (my <= bottom) {
+            dashed(draw, {left, my}, {right, my}, cross);
+            double price = scale.price((bottom - my) / (bottom - top));
+            axis_tag(draw, {right + 2, my - 11}, {right + 98, my + 11}, tag, ink, fmt(price));
+        }
+    }
+    // Hovered bar readout sits inside the plot, under the legend, so it never shifts the layout.
+    int readout = hover >= 0 && hover < int(p.bars.size()) ? hover : over ? -1 : int(p.bars.size()) - 1;
+    if (readout >= 0) {
+        auto &bar = p.bars[readout];
+        double previous = readout > 0 ? p.bars[readout - 1].close : bar.open;
+        ImU32 tone = bar.close >= previous ? up : down;
+        float x = left + 4, y = top + 4;
+        auto pair = [&](const char *k, const std::string &v, ImU32 c) {
+            label(x, y, k, faint);
+            x += ImGui::CalcTextSize(k).x + 4;
+            label(x, y, v, c);
+            x += ImGui::CalcTextSize(v.c_str()).x + 12;
+        };
+        draw->PushClipRect({left, top}, {right, bottom}, true);
+        pair("O", price_text(bar.open), tone);
+        pair("H", price_text(bar.high), tone);
+        pair("L", price_text(bar.low), tone);
+        pair("C", price_text(bar.close), tone);
+        if (previous > 0) {
+            double pct = (bar.close / previous - 1) * 100;
+            pair("", (pct >= 0 ? "+" : "") + fmt(pct) + "%", tone);
+        }
+        if (std::isfinite(bar.volume))
+            pair("V", compact_number(bar.volume), muted);
+        draw->PopClipRect();
     }
     auto hint = drawing_hint(p);
     if (!hint.empty()) {
         text(gold, hint);
-    } else if (hover >= 0 && hover < int(p.bars.size())) {
-        auto bar = p.bars[hover];
-        text(muted, local_date(bar.time) + "   O " + fmt(bar.open) + "   H " + fmt(bar.high) + "   L " +
-                        fmt(bar.low) + "   C " + fmt(bar.close) + "   V " + fmt(bar.volume, 0));
     } else {
         auto &e = s.ensure(p.symbol, p.tf);
         std::string status = s.offline ? "Offline cache" : e.loading ? "Refreshing..." : "Auto 60s";
@@ -1135,6 +1528,306 @@ static void chart(State &s, Panel &p) {
         text(muted, data_source(e.history) + " / " + e.history.currency + " / " + status + " / Bar opened " +
                         local_date(p.bars.back().time));
     }
+}
+static std::string pnf_settings_label(const PnfChart &c, const PnfSettings &s) {
+    std::string box = c.logarithmic ? fmt(c.step * 100, c.step * 100 < 1 ? 2 : 1) + "%" : price_text(c.step);
+    return "P&F " + box + " x " + std::to_string(std::max(1, s.reversal)) + " / " +
+           (c.logarithmic ? "log" : "arithmetic") + " / " + (s.closes ? "close" : "high-low");
+}
+// Point and figure: one column per run of X (rising) or O (falling) boxes, rows on the box grid.
+static void pnf_chart(State &s, Panel &p) {
+    auto size = ImGui::GetContentRegionAvail();
+    size.y -= 28;
+    if (size.x < 260 || size.y < 190) {
+        ImGui::TextWrapped("Enlarge this panel to display the chart.");
+        return;
+    }
+    const auto &pf = p.pnf_chart;
+    const auto &cols = pf.columns;
+    ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("canvas", size, ImGuiButtonFlags_MouseButtonLeft);
+    auto &io = ImGui::GetIO();
+    bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_NoNavOverride), active = ImGui::IsItemActive();
+    auto *draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(origin, {origin.x + size.x, origin.y + size.y}, bg);
+    float left = origin.x + 16, right = origin.x + size.x - 102, top = origin.y + 46, foot = origin.y + size.y - 28,
+          bottom = foot - 14, pw = right - left;
+    auto centered = [&](const std::string &value, float y, ImU32 color) {
+        draw->AddText({(left + right - ImGui::CalcTextSize(value.c_str()).x) / 2, y}, color, value.c_str());
+    };
+    if (cols.empty()) {
+        centered(pf.error.empty() ? "Not enough price movement for one column at this box size."
+                                  : pf.error,
+                 (top + bottom) / 2 - 8, pf.error.empty() ? muted : gold);
+        centered("Change the box size or reversal under View.", (top + bottom) / 2 + 16, faint);
+        ImGui::TextUnformatted("");
+        return;
+    }
+    const size_t n = cols.size();
+    auto &view = p.pnf_view;
+    if (p.pnf_fit) {
+        // About 16 px per column: readable marks, with the newest columns at the usual position.
+        view.count = std::clamp(double(pw) / 16, std::min(15., double(n) / View::latest_position),
+                                std::max(1., double(n) / View::latest_position));
+        view.first = double(n) - .5 - view.count * View::latest_position;
+        p.pnf_fit = false;
+    }
+    float mx = io.MousePos.x, my = io.MousePos.y;
+    bool over = hovered && mx >= left && mx <= right && my >= top && my <= foot;
+    ScrollMotion motion;
+    if (over)
+        motion = p.scroll.update(io.MouseWheelH, io.MouseWheel, io.KeyShift, ImGui::GetTime());
+    bool zooming = motion.zoom != 0;
+    if (over) {
+        view.pan(-motion.pan * view.count * .06);
+        if (zooming)
+            view.zoom(n, motion.zoom, (mx - left) / pw);
+        if (ImGui::IsMouseDoubleClicked(0))
+            pnf_latest(p);
+    }
+    if (active) {
+        s.active = p.id;
+        if (over && !zooming && ImGui::IsMouseDragging(0, 0))
+            view.pan(-io.MouseDelta.x / pw * view.count);
+    }
+    if ((hovered || ImGui::IsItemFocused()) && !io.WantTextInput && !io.KeyCtrl && !io.KeySuper) {
+        for (auto key : {ImGuiKey_LeftArrow, ImGuiKey_RightArrow, ImGuiKey_Home, ImGuiKey_End})
+            ImGui::SetKeyOwner(key, ImGui::GetItemID());
+        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_A))
+            view.pan(-std::max(1., view.count * .1));
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_D))
+            view.pan(std::max(1., view.count * .1));
+        if (ImGui::IsKeyPressed(ImGuiKey_Home))
+            view.first = 0;
+        if (ImGui::IsKeyPressed(ImGuiKey_End))
+            pnf_latest(p);
+    }
+    auto [a, b] = view.visible(n);
+    if (a == b) { // Panned past either end: keep the nearest column in the scale.
+        a = std::clamp(a, 0, int(n) - 1);
+        b = a + 1;
+    }
+    // Rows fit the visible columns and the latest price, like the time chart's automatic price scale.
+    double latest = p.bars.back().close;
+    double latest_row = pf.logarithmic && latest <= 0 ? missing : pf.row(latest);
+    int lo = cols[size_t(a)].low, hi = cols[size_t(a)].high;
+    for (int c = a; c < b; ++c) {
+        lo = std::min(lo, cols[size_t(c)].low);
+        hi = std::max(hi, cols[size_t(c)].high);
+    }
+    if (b == int(n) && std::isfinite(latest_row)) {
+        lo = std::min(lo, int(std::floor(latest_row)));
+        hi = std::max(hi, int(std::ceil(latest_row)));
+    }
+    int pad = std::max(1, (hi - lo) / 12);
+    double r0 = lo - pad - .5, r1 = hi + pad + .5;
+    float rh = (bottom - top) / float(r1 - r0), cw = pw / float(view.count);
+    auto x = [&](double col) { return left + float((col - view.first + .5) / view.count) * pw; };
+    auto y = [&](double row) { return bottom - float((row - r0) / (r1 - r0)) * (bottom - top); };
+    auto bar_time = [&](int bar) { return p.bars[size_t(std::clamp(bar, 0, int(p.bars.size()) - 1))].time; };
+    auto label_price = [&](double v) {
+        double m = std::abs(v);
+        return fmt(v, m >= 10000 ? 0 : m >= 1000 ? 1 : m >= 10 ? 2 : m >= 1 ? 3 : 4);
+    };
+    // Grid: rows at a spacing that keeps price labels apart; columns where the year or month turns.
+    int row_step = 1;
+    for (int step : {1, 2, 5, 10, 20, 25, 50, 100, 200, 500, 1000, 2000, 5000, 10000})
+        if (step * rh >= 26) {
+            row_step = step;
+            break;
+        }
+    float ly = std::isfinite(latest_row) ? y(latest_row) : -1e6f;
+    for (int r = int(std::ceil(r0)); r <= int(std::floor(r1)); ++r) {
+        if (((r % row_step) + row_step) % row_step)
+            continue;
+        float yy = y(r);
+        draw->AddLine({left, yy}, {right, yy}, grid);
+        if (std::abs(yy - ly) > 22 && !(over && std::abs(yy - my) < 20))
+            draw->AddText({right + 10, yy - 8}, muted, label_price(pf.price(r)).c_str());
+    }
+    {
+        int last_label = -1000000;
+        float min_gap = 74;
+        for (int c = std::max(0, a); c < b; ++c) {
+            Time t = bar_time(cols[size_t(c)].fills.front());
+            Time prev = c ? bar_time(cols[size_t(c - 1)].fills.front()) : 0;
+            bool new_year = !c || local_date(t, "%Y") != local_date(prev, "%Y");
+            bool new_month = !c || local_date(t, "%Y%m") != local_date(prev, "%Y%m");
+            float xx = x(c);
+            if (new_year)
+                draw->AddLine({xx, top}, {xx, bottom}, rgba(33, 44, 56));
+            if ((new_month || new_year) && (xx - x(last_label)) >= min_gap) {
+                auto text_value = local_date(t, new_year ? "%Y" : "%b '%y");
+                draw->AddText({xx + 3, bottom + 4}, new_year ? ink : muted, text_value.c_str());
+                last_label = c;
+            }
+        }
+    }
+    // Hover: the column, the box row, and the bar that filled that box.
+    int hover_col = -1, hover_row = 0, hover_bar = -1;
+    if (over && my <= bottom) {
+        hover_col = int(std::floor(view.first + (mx - left) / pw * view.count));
+        hover_row = int(std::lround(r0 + (bottom - my) / (bottom - top) * (r1 - r0)));
+        if (hover_col >= 0 && hover_col < int(n)) {
+            auto &c = cols[size_t(hover_col)];
+            if (hover_row >= c.low && hover_row <= c.high)
+                hover_bar = c.bar(hover_row);
+        }
+    }
+    draw->PushClipRect({left, top}, {right, bottom}, true);
+    // The live column is shaded so the current run stands out.
+    draw->AddRectFilled({x(double(n - 1) - .5), top}, {x(double(n - 1) + .5), bottom}, rgba(255, 255, 255, 6));
+    // Rows fit the price range, so cells are rarely square; marks fill the cell up to a 3:2 aspect.
+    float box = std::min(cw, rh), thick = std::clamp(box * .1f, 1.f, 2.4f);
+    float hw = cw * .34f, hh = rh * .34f;
+    hw = std::min(hw, hh * 1.5f);
+    hh = std::min(hh, hw * 1.5f);
+    float digit_size = std::clamp(rh * 1.3f, 8.5f, ImGui::GetFontSize());
+    bool marks = p.tf >= 2 && rh >= 6.5f && cw >= 7; // Month markers on daily and weekly charts.
+    static const char *months = "123456789ABC";
+    // The month of the box filled just before the first visible column, so markers start correctly.
+    int previous_month = -1;
+    if (a > 0)
+        previous_month = std::stoi(local_date(bar_time(cols[size_t(a - 1)].fills.back()), "%m"));
+    for (int c = a; c < b; ++c) {
+        auto &col = cols[size_t(c)];
+        ImU32 color = col.up ? up : down;
+        float cx = x(c);
+        if (col.signal) {
+            // The breakout box: first X above the prior X column's top, or O below the prior O column's bottom.
+            int row = col.up ? cols[size_t(c - 2)].high + 1 : cols[size_t(c - 2)].low - 1;
+            draw->AddRectFilled({cx - cw / 2 + 1, y(row + .5) + 1}, {cx + cw / 2 - 1, y(row - .5) - 1},
+                                with_alpha(color, 46), 2);
+        }
+        for (size_t k = 0; k < col.fills.size(); ++k) {
+            int row = col.up ? col.low + int(k) : col.high - int(k);
+            float cy = y(row);
+            int bar = col.fills[k];
+            if (bar == hover_bar && c == hover_col)
+                draw->AddRectFilled({cx - cw / 2, cy - rh / 2}, {cx + cw / 2, cy + rh / 2}, with_alpha(color, 40));
+            int month = -1;
+            if (marks)
+                month = std::stoi(local_date(bar_time(bar), "%m"));
+            if (marks && previous_month >= 0 && month != previous_month) {
+                char digit[2] = {months[month - 1], 0};
+                auto extent = ImGui::GetFont()->CalcTextSizeA(digit_size, FLT_MAX, 0, digit);
+                draw->AddText(ImGui::GetFont(), digit_size, {cx - extent.x / 2, cy - extent.y / 2}, color, digit);
+            } else if (box < 3.5f) {
+                draw->AddRectFilled({cx - std::max(.5f, cw * .3f), cy - std::max(.5f, rh * .4f)},
+                                    {cx + std::max(.5f, cw * .3f), cy + std::max(.5f, rh * .4f)}, color);
+            } else if (col.up) {
+                draw->AddLine({cx - hw, cy - hh}, {cx + hw, cy + hh}, color, thick);
+                draw->AddLine({cx + hw, cy - hh}, {cx - hw, cy + hh}, color, thick);
+            } else
+                draw->AddEllipse({cx, cy}, {hw, hh}, color, 0, 0, thick);
+            if (marks)
+                previous_month = month;
+        }
+    }
+    if (std::isfinite(latest_row))
+        dashed(draw, {left, ly}, {right, ly}, with_alpha(cols.back().up ? up : down, 150), 2, 3);
+    if (over && my <= bottom && hover_col >= 0) {
+        dashed(draw, {left, y(hover_row)}, {right, y(hover_row)}, rgba(70, 88, 108), 3, 3);
+        dashed(draw, {x(hover_col), top}, {x(hover_col), bottom}, rgba(70, 88, 108), 3, 3);
+    }
+    draw->PopClipRect();
+    if (std::isfinite(latest_row) && ly >= top && ly <= bottom)
+        axis_tag(draw, {right + 2, ly - 11}, {right + 98, ly + 11}, cols.back().up ? up : down, rgba(8, 12, 18),
+                 price_text(latest));
+    if (over && my <= bottom) {
+        float hy = y(hover_row);
+        axis_tag(draw, {right + 2, hy - 11}, {right + 98, hy + 11}, rgba(46, 60, 76), ink,
+                 label_price(pf.price(hover_row)));
+    }
+    // Legend: settings, size of the chart, and the most recent signal.
+    {
+        std::string summary = pnf_settings_label(pf, p.pnf) + " / " + std::to_string(n) + " columns";
+        draw->AddText({left, origin.y + 6}, ink, summary.c_str());
+        for (size_t c = n; c-- > 2;)
+            if (cols[c].signal) {
+                int row = cols[c].up ? cols[c - 2].high + 1 : cols[c - 2].low - 1;
+                std::string signal = std::string(cols[c].up ? "Last signal: buy (double top) " : "Last signal: sell (double bottom) ") +
+                                     local_date(bar_time(cols[c].bar(row)), "%b %d, %Y") + " at " +
+                                     label_price(pf.price(row));
+                draw->AddText({left, origin.y + 24}, cols[c].up ? up : down, signal.c_str());
+                break;
+            }
+    }
+    if (hover_col >= 0 && hover_col < int(n) && over && my <= bottom) {
+        auto &c = cols[size_t(hover_col)];
+        ImGui::BeginTooltip();
+        text(c.up ? up : down, std::string(c.up ? "X column" : "O column") + " / " +
+                                   std::to_string(c.high - c.low + 1) + " boxes / " + label_price(pf.price(c.low)) +
+                                   " to " + label_price(pf.price(c.high)));
+        text(muted, local_date(bar_time(c.fills.front()), "%b %d, %Y") + " to " +
+                        local_date(bar_time(c.fills.back()), "%b %d, %Y"));
+        if (hover_bar >= 0) {
+            int same = int(std::count(c.fills.begin(), c.fills.end(), hover_bar));
+            ImGui::Separator();
+            text(ink, "Box " + label_price(pf.price(hover_row)) + " filled " +
+                          local_date(bar_time(hover_bar), p.tf >= 2 ? "%b %d, %Y" : "%b %d, %Y %H:%M"));
+            if (same > 1)
+                text(muted, std::to_string(same) + " boxes filled by that bar (highlighted)");
+        }
+        ImGui::EndTooltip();
+    }
+    auto &e = s.ensure(p.symbol, p.tf);
+    std::string status = s.offline ? "Offline cache" : e.loading ? "Refreshing..." : "Auto 60s";
+    text(muted, data_source(e.history) + " / " + e.history.currency + " / " + status + " / " +
+                    std::to_string(p.bars.size()) + " " + timeframes[p.tf] + " bars from " +
+                    local_date(p.bars.front().time, "%Y-%m-%d"));
+}
+// Stale data is about to be replaced: after a manual refresh, a first load, or an old cache.
+// Routine 60-second polls of fresh data stay quiet.
+static bool loading_stale(const State &s, const Series &series) {
+    return !s.offline && series.loading &&
+           (series.manual || !series.loaded || now() - series.history.fetched > 90);
+}
+static void spinner(ImDrawList *draw, ImVec2 center, float radius, ImU32 color, float thickness = 4) {
+    float start = float(ImGui::GetTime() * 5.5);
+    draw->AddCircle(center, radius, with_alpha(color, 50), 48, thickness);
+    draw->PathArcTo(center, radius, start, start + 4.2f, 36);
+    draw->PathStroke(color, ImDrawFlags_None, thickness);
+    request_frame(1. / 30.);
+}
+static void loading_overlay(Panel &p, const Series &series, ImVec2 min, ImVec2 max) {
+    auto *draw = ImGui::GetWindowDrawList();
+    draw->PushClipRect(min, max, true);
+    draw->AddRectFilled(min, max, with_alpha(bg, 215));
+    std::string title = "Refreshing " + display_symbol(p.symbol) + "  /  " + timeframes[p.tf];
+    std::string detail = series.loaded && series.history.fetched > 0
+                             ? "Chart below is from " + local_date(series.history.fetched, "%b %d %H:%M")
+                             : "";
+    float width = std::max(ImGui::CalcTextSize(title.c_str()).x, ImGui::CalcTextSize(detail.c_str()).x) + 56;
+    ImVec2 center{(min.x + max.x) / 2, (min.y + max.y) / 2};
+    ImVec2 card_min{center.x - width / 2, center.y - 78}, card_max{center.x + width / 2, center.y + 70};
+    draw->AddRectFilled(card_min, card_max, surface, 8);
+    draw->AddRect(card_min, card_max, with_alpha(accent, 140), 8, 0, 1.5f);
+    spinner(draw, {center.x, center.y - 32}, 24, accent);
+    auto centered = [&](const std::string &value, float y, ImU32 color) {
+        draw->AddText({center.x - ImGui::CalcTextSize(value.c_str()).x / 2, y}, color, value.c_str());
+    };
+    centered(title, center.y + 10, ink);
+    centered(detail, center.y + 36, muted);
+    draw->PopClipRect();
+}
+// Background refresh of a cached chart: a corner badge, so the bars stay readable meanwhile.
+static void refresh_badge(const Series &series, ImVec2 min, ImVec2 max) {
+    auto *draw = ImGui::GetWindowDrawList();
+    std::string label = "Refreshing";
+    if (series.history.fetched > 0)
+        label += " / data from " + local_date(series.history.fetched, "%b %d %H:%M");
+    auto text_size = ImGui::CalcTextSize(label.c_str());
+    // Sits left of the price axis, on the legend row.
+    ImVec2 b_max{max.x - 110, min.y + 6 + text_size.y + 10}, b_min{b_max.x - text_size.x - 42, min.y + 6};
+    if (b_min.x < min.x + 8)
+        return;
+    draw->PushClipRect(min, max, true);
+    draw->AddRectFilled(b_min, b_max, surface, 12);
+    draw->AddRect(b_min, b_max, with_alpha(accent, 140), 12, 0, 1.5f);
+    spinner(draw, {b_min.x + 17, (b_min.y + b_max.y) / 2}, 7, accent, 2.5f);
+    draw->AddText({b_min.x + 32, b_min.y + 5}, ink, label.c_str());
+    draw->PopClipRect();
 }
 static void chart_placeholder(State &s, Panel &p, const Series &series) {
     ImVec2 origin = ImGui::GetCursorScreenPos(), size = ImGui::GetContentRegionAvail();
@@ -1154,13 +1847,15 @@ static void chart_placeholder(State &s, Panel &p, const Series &series) {
     const std::string symbol = display_symbol(p.symbol) + "  /  " + timeframes[p.tf];
     float center = origin.x + size.x / 2;
     float top = origin.y + std::max(12.f, (size.y - 200) / 2);
-    // A static chart icon keeps loading legible without waking the idle render loop.
     ImU32 accent = failed || s.offline ? gold : rgba(0, 160, 210);
-    for (int i = 0; i < 3; ++i) {
-        float x = center - 22 + i * 22, y = top + (i == 1 ? 6 : 15);
-        draw->AddLine({x, y}, {x, y + 42}, accent, 1.5f);
-        draw->AddRectFilled({x - 5, y + 10}, {x + 5, y + 31}, accent);
-    }
+    if (loading_stale(s, series))
+        spinner(draw, {center, top + 30}, 24, accent);
+    else
+        for (int i = 0; i < 3; ++i) {
+            float x = center - 22 + i * 22, y = top + (i == 1 ? 6 : 15);
+            draw->AddLine({x, y}, {x, y + 42}, accent, 1.5f);
+            draw->AddRectFilled({x - 5, y + 10}, {x + 5, y + 31}, accent);
+        }
     auto centered = [&](const std::string &value, float y, ImU32 color) {
         draw->AddText({center - ImGui::CalcTextSize(value.c_str()).x / 2, y}, color, value.c_str());
     };
@@ -1201,12 +1896,21 @@ void frame(State &s, bool update) {
             ImGui::SetNextWindowFocus();
             s.focus_chart = 0;
         }
-        bool opened = ImGui::Begin(title(p, s).c_str(), s.panels.size() > 1 ? &p.open : nullptr,
+        bool opened = ImGui::Begin(title(p).c_str(), s.panels.size() > 1 ? &p.open : nullptr,
                                    ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar |
                                        ImGuiWindowFlags_NoCollapse);
         if (opened) {
             if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
                 s.active = p.id;
+            if (s.panels.size() > 1 && s.active == p.id) {
+                // Watchlist clicks load into the active chart, so mark it when there is a choice.
+                auto inner = ImGui::GetCurrentWindow()->InnerRect;
+                ImVec2 pos = inner.Min, end{inner.Max.x, inner.Min.y + 2};
+                auto *draw = ImGui::GetWindowDrawList();
+                draw->PushClipRect(pos, end, false);
+                draw->AddRectFilled(pos, end, accent);
+                draw->PopClipRect();
+            }
             toolbar(s, p);
             s.update(p);
             auto &e = s.ensure(p.symbol, p.tf);
@@ -1240,8 +1944,21 @@ void frame(State &s, bool update) {
                 }
             if (p.bars.empty())
                 chart_placeholder(s, p, e);
-            else
-                chart(s, p);
+            else {
+                ImVec2 min = ImGui::GetCursorScreenPos(), size = ImGui::GetContentRegionAvail();
+                if (p.point_figure)
+                    pnf_chart(s, p);
+                else
+                    chart(s, p);
+                // Covers the plot and axes, leaving the footer's source line readable.
+                ImVec2 max{min.x + size.x, min.y + size.y - 28};
+                if (loading_stale(s, e)) {
+                    if (e.manual) // The user asked for this refresh: make it unmistakable.
+                        loading_overlay(p, e, min, max);
+                    else
+                        refresh_badge(e, min, max);
+                }
+            }
         }
         ImGui::End();
     }

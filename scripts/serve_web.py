@@ -61,6 +61,15 @@ def upstream(path, method='GET', body=None):
             raise ValueError('Invalid extended-hours flag')
         clean['includePrePost'] = extended if query['interval'] == '1m' else 'false'
         return 'https://query1.finance.yahoo.com/v8/finance/chart/' + urllib.parse.quote(symbol, safe='') + '?' + urllib.parse.urlencode(clean), headers, None
+    if route == '/yahoo/v1/finance/search':
+        # Ticker name lookups for watchlist tooltips: one exact symbol, fixed result sizes.
+        headers['User-Agent'] = 'Chartroom/0.1'
+        fixed = {'quotesCount': '5', 'newsCount': '0', 'listsCount': '0'}
+        if set(query) != {'q', *fixed} or any(query[k] != v for k, v in fixed.items()):
+            raise ValueError('Invalid search')
+        if not re.fullmatch(r'[A-Z0-9.^=_-]{1,32}', query['q']):
+            raise ValueError('Invalid symbol')
+        return 'https://query1.finance.yahoo.com/v1/finance/search?' + urllib.parse.urlencode({'q': query['q'], **fixed}), headers, None
     company = re.fullmatch(r'/nasdaq/api/(company/([A-Z-]{1,10})/(company-profile|earnings-surprise)|analyst/([A-Z-]{1,10})/earnings-date)', route)
     if company:
         if query:

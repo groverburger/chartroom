@@ -4,6 +4,7 @@
 #include <ctime>
 #include <iomanip>
 #include <regex>
+#include <set>
 #include <sstream>
 namespace cr {
 static double num(const Json &j) {
@@ -503,5 +504,69 @@ Result eps_series(const Fundamentals &fund, const std::vector<Bar> &bars, bool t
         result.lines[0][i] = value;
     }
     return result;
+}
+std::string live_list_url(const std::string &source) {
+    if (source == "sp500")
+        return "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv";
+    if (source == "open8585")
+        return "https://groverburger.github.io/open8585/api/list.json";
+    return {};
+}
+LiveList parse_live_list(const std::string &source, const std::string &body) {
+    LiveList out;
+    std::set<std::string> seen;
+    auto add = [&](std::string symbol) {
+        // Class shares use Yahoo's dash form (BRK.B -> BRK-B).
+        std::replace(symbol.begin(), symbol.end(), '.', '-');
+        symbol = normalize_symbol(symbol);
+        if (seen.insert(symbol).second)
+            out.symbols.push_back(symbol);
+    };
+    if (source == "sp500") {
+        std::istringstream lines(body);
+        std::string line;
+        if (!std::getline(lines, line) || !line.starts_with("Symbol,"))
+            throw std::runtime_error("S&P 500: unexpected constituents format");
+        while (std::getline(lines, line)) {
+            auto symbol = line.substr(0, line.find(','));
+            if (!symbol.empty() && symbol.back() == '\r')
+                symbol.pop_back();
+            if (!symbol.empty())
+                add(symbol);
+        }
+        if (out.symbols.size() < 400)
+            throw std::runtime_error("S&P 500: constituent list is incomplete");
+        std::sort(out.symbols.begin(), out.symbols.end());
+    } else if (source == "open8585") {
+        auto j = Json::parse(body);
+        for (auto &row : j.at("stocks"))
+            add(row.at("symbol").get<std::string>());
+        out.asof = j.value("data_through", std::string{});
+    } else
+        throw std::runtime_error("Unknown live list");
+    return out;
+}
+std::string profile_url(const std::string &symbol) {
+    return "https://query1.finance.yahoo.com/v1/finance/search?q=" + url_encode(symbol) +
+           "&quotesCount=5&newsCount=0&listsCount=0";
+}
+Profile parse_profile(const std::string &body, const std::string &symbol) {
+    auto j = Json::parse(body);
+    auto field = [](const Json &q, const char *display, const char *raw) {
+        for (auto key : {display, raw})
+            if (q.contains(key) && q[key].is_string() && !q[key].get<std::string>().empty())
+                return q[key].get<std::string>();
+        return std::string{};
+    };
+    // Search ranks related tickers too (AAPL also returns AAPU); only the exact symbol counts.
+    for (auto &q : j.value("quotes", Json::array()))
+        if (q.value("symbol", std::string{}) == symbol) {
+            Profile out{field(q, "longname", "shortname"), field(q, "typeDisp", "quoteType"),
+                        field(q, "sectorDisp", "sector"), field(q, "industryDisp", "industry")};
+            if (out.name.empty())
+                break;
+            return out;
+        }
+    throw std::runtime_error("No name found for " + display_symbol(symbol));
 }
 } // namespace cr

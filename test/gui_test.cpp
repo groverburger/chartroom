@@ -56,7 +56,7 @@ int main() {
         a.ohlc = true;
         a.indicators[0].background = false;
         a.indicators[0].ma_colors[0] = rgba(12, 34, 56);
-        auto &b = state.add("BTC");
+        auto &b = state.add(resolve_symbol("BTC"));
         b.indicators = {indicator("BB"), indicator("MACD")};
         auto frame = [&](
                          std::function<void()> input = []() {}, std::function<void()> extra = []() {}) {
@@ -103,7 +103,7 @@ int main() {
         auto &vertices = aw->DrawList->VtxBuffer;
         float min_x = 1e9f, max_x = -1e9f;
         for (const auto &v : vertices) {
-            if (v.col == rgba(117, 140, 163) && std::abs(v.pos.x - snapped) < 3 &&
+            if (v.col == rgba(140, 160, 182, 150) && std::abs(v.pos.x - snapped) < 3 &&
                 v.pos.y > aw->Pos.y + 100 && v.pos.y < aw->Pos.y + 135) {
                 min_x = std::min(min_x, v.pos.x);
                 max_x = std::max(max_x, v.pos.x);
@@ -333,6 +333,25 @@ int main() {
         // Floating panels stay in the main OS window, including old detached layouts.
         frame([] {}, [] { ImGui::ClosePopupsOverWindow(nullptr, true); });
         CHECK(!(io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable));
+        // The header symbol is an inline field: click, type, Enter loads it in that chart.
+        {
+            auto field = aw->ContentRegionRect.Min;
+            ImVec2 at{field.x + 12, field.y + 12};
+            press(at.x, at.y);
+            release();
+            CHECK(ImGui::GetActiveID() == aw->GetID("##symbol"));
+            frame([&] {
+                for (char c : std::string("QQQ"))
+                    io.AddInputCharacter(c);
+            });
+            key(ImGuiKey_Enter);
+            CHECK(a.symbol == "QQQ" && b.symbol != "QQQ");
+            state.select(a, "SPY", 2);
+            state.tick();
+            a.view = unchanged;
+            for (int i = 0; i < 3; ++i)
+                frame();
+        }
         state.drawing_tools_open = true;
         frame();
         auto *tools = ImGui::FindWindowByName("Drawing tools");

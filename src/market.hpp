@@ -74,4 +74,17 @@ struct ScreenResult {
 };
 Json scanner_request(const ScreenQuery &);
 ScreenResult parse_screen(const std::string &);
+// Display identity for tooltips, from Yahoo search's exact-symbol match.
+struct Profile {
+    std::string name, type, sector, industry;
+};
+std::string profile_url(const std::string &symbol);
+Profile parse_profile(const std::string &body, const std::string &symbol);
+// Watchlists whose symbols come from a published source and refresh while open.
+struct LiveList {
+    std::vector<std::string> symbols;
+    std::string asof;
+};
+std::string live_list_url(const std::string &source); // "sp500" or "open8585"; empty when unknown.
+LiveList parse_live_list(const std::string &source, const std::string &body);
 } // namespace cr

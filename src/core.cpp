@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <ctime>
 #include <deque>
+#include <functional>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
@@ -82,23 +83,148 @@ Time local_instant(Time wall) {
     tm.tm_isdst = -1;
     return std::mktime(&tm);
 }
-std::string normalize_symbol(std::string s) {
-    auto a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
-    if (a == std::string::npos)
-        throw std::runtime_error("Enter a ticker such as SPY or BTC.");
-    s = s.substr(a, b - a + 1);
+static std::string ticker(std::string s, bool aliases) {
     for (auto &c : s)
         c = char(std::toupper(static_cast<unsigned char>(c)));
     if (s.size() > 32 ||
         s.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.^=_-") != std::string::npos)
         throw std::runtime_error("Invalid ticker.");
-    static const std::map<std::string, std::string> aliases = {
+    static const std::map<std::string, std::string> shorthands = {
         {"BTC", "BTC-USD"}, {"ETH", "ETH-USD"}, {"SOL", "SOL-USD"}, {"VIX", "^VIX"},
         {"ES", "ES=F"},     {"NQ", "NQ=F"},     {"CL", "CL=F"}};
-    auto it = aliases.find(s);
-    return it == aliases.end() ? s : it->second;
+    auto it = shorthands.find(s);
+    return aliases && it != shorthands.end() ? it->second : s;
+}
+static bool numeric(const std::string &s) {
+    return s.find_first_not_of("0123456789.") == std::string::npos && std::count(s.begin(), s.end(), '.') <= 1 &&
+           s != ".";
+}
+// Splits on + * / ( ) and on a dash that starts a token; a dash inside a ticker stays (BRK-B).
+static std::vector<Expression::Token> tokens(const std::string &s, bool aliases) {
+    std::vector<Expression::Token> out;
+    for (size_t i = 0; i < s.size();) {
+        char c = s[i];
+        if (std::isspace(static_cast<unsigned char>(c)))
+            ++i;
+        else if (std::string("+-*/()").find(c) != std::string::npos) {
+            out.push_back({c});
+            ++i;
+        } else {
+            size_t end = s.find_first_of(" \t\r\n+*/()", i);
+            auto word = s.substr(i, end == std::string::npos ? std::string::npos : end - i);
+            i += word.size();
+            if (numeric(word))
+                out.push_back({0, word, std::stod(word)});
+            else
+                out.push_back({0, ticker(word, aliases)});
+        }
+    }
+    return out;
+}
+static Expression parse_tokens(const std::vector<Expression::Token> &);
+static std::string canonical(std::string s, bool aliases) {
+    auto a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
+    if (a == std::string::npos)
+        throw std::runtime_error("Enter a ticker such as SPY or BTC.");
+    s = s.substr(a, b - a + 1);
+    auto parts = tokens(s, aliases);
+    if (parts.size() == 1 && !parts[0].op && parts[0].symbol.size() && !numeric(parts[0].symbol))
+        return parts[0].symbol;
+    parse_tokens(parts); // Grammar and ticker count, before joining could merge "SPY QQQ".
+    std::string out;
+    for (auto &t : parts)
+        out += t.op == '-' ? std::string(" - ") : t.op ? std::string(1, t.op) : t.symbol;
+    parse_expression(out);
+    return out;
+}
+std::string normalize_symbol(std::string s) {
+    return canonical(std::move(s), false);
+}
+std::string resolve_symbol(std::string s) {
+    return canonical(std::move(s), true);
+}
+bool is_expression(const std::string &s) {
+    return s.find_first_of("+*/() ") != std::string::npos;
+}
+Expression parse_expression(const std::string &s) {
+    if (s.size() > 60)
+        throw std::runtime_error("Expression is too long.");
+    return parse_tokens(tokens(s, false));
+}
+static Expression parse_tokens(const std::vector<Expression::Token> &list) {
+    Expression e;
+    size_t i = 0;
+    auto fail = [](const std::string &why) -> void { throw std::runtime_error("Invalid expression: " + why); };
+    std::function<void()> sum, product, operand;
+    operand = [&] {
+        if (i >= list.size())
+            fail("it ends with an operator.");
+        auto &t = list[i++];
+        if (t.op == '(') {
+            sum();
+            if (i >= list.size() || list[i].op != ')')
+                fail("missing ).");
+            ++i;
+        } else if (t.op)
+            fail(std::string("unexpected ") + t.op + ". Use spaces around minus: SPY - QQQ.");
+        else {
+            if (t.symbol.size() && !numeric(t.symbol) &&
+                std::find(e.symbols.begin(), e.symbols.end(), t.symbol) == e.symbols.end())
+                e.symbols.push_back(t.symbol);
+            e.rpn.push_back(t);
+        }
+    };
+    product = [&] {
+        operand();
+        while (i < list.size() && (list[i].op == '*' || list[i].op == '/')) {
+            auto op = list[i++];
+            operand();
+            e.rpn.push_back(op);
+        }
+    };
+    sum = [&] {
+        product();
+        while (i < list.size() && (list[i].op == '+' || list[i].op == '-')) {
+            auto op = list[i++];
+            product();
+            e.rpn.push_back(op);
+        }
+    };
+    sum();
+    if (i < list.size())
+        fail(list[i].op == ')' ? "unmatched )." : "missing operator between terms.");
+    if (e.symbols.empty())
+        fail("include at least one ticker.");
+    if (e.symbols.size() > 8)
+        fail("use at most 8 tickers.");
+    return e;
+}
+double Expression::evaluate(const std::map<std::string, double> &values) const {
+    std::vector<double> stack;
+    for (auto &t : rpn) {
+        if (!t.op) {
+            if (t.symbol.empty() || numeric(t.symbol))
+                stack.push_back(t.number);
+            else {
+                auto it = values.find(t.symbol);
+                stack.push_back(it == values.end() ? missing : it->second);
+            }
+            continue;
+        }
+        double b = stack.back();
+        stack.pop_back();
+        double &a = stack.back();
+        a = t.op == '+' ? a + b : t.op == '-' ? a - b : t.op == '*' ? a * b : b != 0 ? a / b : missing;
+    }
+    return stack.empty() ? missing : stack.back();
 }
 std::string display_symbol(const std::string &s) {
+    if (is_expression(s)) {
+        std::string out;
+        for (auto &t : tokens(s, false))
+            out += t.op == '-' ? std::string(" - ") : t.op ? std::string(1, t.op) : display_symbol(t.symbol);
+        return out;
+    }
     if (s == "^VIX")
         return "VIX";
     if (s == "BTC-USD" || s == "ETH-USD" || s == "SOL-USD")
@@ -587,6 +713,69 @@ Quote parse_quote(const std::string &body, const std::string &symbol) {
     }
     throw std::runtime_error("Current price or previous session close unavailable");
 }
+History combine_expression(const std::string &symbol, const std::vector<const History *> &legs) {
+    auto e = parse_expression(symbol);
+    History out;
+    if (legs.empty() || legs.size() != e.symbols.size())
+        throw std::runtime_error("Expression legs do not match");
+    auto &first = *legs.front();
+    out.symbol = symbol;
+    out.interval = first.interval;
+    out.fetched = first.fetched;
+    out.currency = first.currency;
+    // Keep the first leg's session calendar; drop its provider and recovery annotations.
+    for (auto it = first.meta.begin(); it != first.meta.end(); ++it)
+        if (!it.key().starts_with("chartroom"))
+            out.meta[it.key()] = it.value();
+    std::set<std::string> sources;
+    for (auto *leg : legs) {
+        out.fetched = std::min(out.fetched, leg->fetched);
+        if (leg->currency != out.currency)
+            out.currency.clear();
+        sources.insert(leg->meta.value("chartroomSource", std::string("Yahoo")));
+    }
+    std::string source;
+    for (auto &s : sources)
+        source += (source.empty() ? "" : " + ") + s;
+    out.meta["chartroomSource"] = source;
+    // Daily bars open at different UTC times by venue (stocks 13:30, crypto 00:00), so match on the bar's
+    // UTC day; weekly on the week bucket; intraday on the hour.
+    auto slot = [&](Time t) {
+        return out.interval == "1d" ? floor_div(t, 86400) : out.interval == "1wk" ? bucket(t, "1wk") : floor_div(t, 3600);
+    };
+    std::vector<std::map<Time, const Bar *>> index(legs.size());
+    for (size_t j = 1; j < legs.size(); ++j)
+        for (auto &b : legs[j]->bars)
+            index[j][slot(b.time)] = &b;
+    std::map<std::string, double> open, high, low, close;
+    for (auto &b : first.bars) {
+        Time key = slot(b.time);
+        bool complete = true;
+        for (size_t j = 0; j < legs.size() && complete; ++j) {
+            const Bar *leg = &b;
+            if (j) {
+                auto it = index[j].find(key);
+                if (it == index[j].end()) {
+                    complete = false;
+                    break;
+                }
+                leg = it->second;
+            }
+            open[e.symbols[j]] = leg->open;
+            high[e.symbols[j]] = leg->high;
+            low[e.symbols[j]] = leg->low;
+            close[e.symbols[j]] = leg->close;
+        }
+        if (!complete)
+            continue;
+        // As in TradingView spreads: evaluate each price field, then widen high/low to contain the bar.
+        double o = e.evaluate(open), h = e.evaluate(high), l = e.evaluate(low), c = e.evaluate(close);
+        Bar bar{b.time, o, std::max({o, h, l, c}), std::min({o, h, l, c}), c, missing};
+        if (valid(bar))
+            out.bars.push_back(bar);
+    }
+    return out;
+}
 std::optional<Quote> quote(const History &h) {
     if (auto q = metadata_quote(h.meta, h.fetched)) {
         q->source = h.meta.value("chartroomSource", std::string("Yahoo"));
@@ -892,12 +1081,76 @@ static std::vector<double> true_ranges(const std::vector<Bar> &bars) {
     }
     return tr;
 }
+// Mirrors open8585/ratings.py (ad_ema_conviction_balance_v1), including its pandas NaN handling.
+std::vector<double> ad_balance(const std::vector<Bar> &bars, int half_life) {
+    constexpr size_t volume_lookback = 10, atr_lookback = 20, warmup = 63;
+    const size_t n = bars.size();
+    std::vector<double> out(n, missing);
+    double alpha = 1 - std::pow(.5, 1. / half_life);
+    // ewm(adjust=False): a missing observation still decays the prior state's weight.
+    struct Ema {
+        double value = 0, weight = 1;
+    } up, down;
+    auto add = [&](Ema &e, double x) {
+        e.weight *= 1 - alpha;
+        if (std::isfinite(x)) {
+            e.value = (e.weight * e.value + alpha * x) / (e.weight + alpha);
+            e.weight = 1;
+        }
+    };
+    std::vector<double> tr(n, missing);
+    for (size_t i = 1; i < n; ++i) {
+        auto &b = bars[i];
+        double prev = bars[i - 1].close;
+        tr[i] = std::max({b.high - b.low, std::abs(b.high - prev), std::abs(b.low - prev)});
+    }
+    for (size_t i = 1; i < n; ++i) {
+        double prev = bars[i - 1].close, change = bars[i].close - prev;
+        double ret = prev > 0 ? change / prev : missing;
+        double prior = missing, atr = missing;
+        if (i >= volume_lookback) {
+            prior = 0;
+            for (size_t j = i - volume_lookback; j < i; ++j)
+                prior += bars[j].volume;
+            prior /= volume_lookback;
+        }
+        if (i >= atr_lookback) {
+            atr = 0;
+            for (size_t j = i + 1 - atr_lookback; j <= i; ++j)
+                atr += tr[j];
+            atr /= atr_lookback;
+        }
+        double relative = prior > 0 ? bars[i].volume / prior : missing;
+        double move = atr > 0 ? std::clamp(change / atr, -1., 1.) : missing;
+        // NaN comparisons are false, so missing volume or returns never qualify.
+        bool qualifies = std::abs(ret) >= .002 && relative > 1;
+        double evidence = qualifies ? std::log2(1 + relative) * (1 + std::abs(move)) : 0;
+        add(up, ret > 0 ? evidence : 0);
+        add(down, ret < 0 ? evidence : 0);
+        double total = up.value + down.value;
+        if (i + 1 >= warmup)
+            out[i] = total > 0 ? 100 * (up.value - down.value) / total : 0;
+    }
+    return out;
+}
+const char *ad_grade(double balance) {
+    static constexpr double thresholds[] = {-30.684010209862702, -22.778246196649842, -15.058281620379942,
+                                            -11.87880266107041,  -3.8535151919915176, 2.2851098463169595,
+                                            5.111067544378887,   20.532192692683413,  24.094060332509027,
+                                            37.042540790342954,  46.39769728076267,   59.53363136770642};
+    static constexpr const char *grades[] = {"E",  "D-", "D",  "D+", "C-", "C", "C+",
+                                             "B-", "B",  "B+", "A-", "A",  "A+"};
+    if (!std::isfinite(balance))
+        return "";
+    return grades[std::upper_bound(std::begin(thresholds), std::end(thresholds), balance) -
+                  std::begin(thresholds)];
+}
 Result calculate(const Indicator &s, const std::vector<Bar> &bars, int tf, const History *chart,
                  const History *source, Time clock) {
     Result r;
     r.name = s.kind == "RIBBON" ? "MA ribbon" : s.kind + " " + std::to_string(s.period);
     r.pane = s.kind == "RSI" || s.kind == "MACD" || s.kind == "ATR" || s.kind == "STOCH" || s.kind == "ROC" ||
-             s.kind == "OBV";
+             s.kind == "OBV" || s.kind == "AD";
     r.colored_bars = s.kind == "RIBBON" && s.colored_bars;
     r.background = s.background;
     std::vector<double> prices;
@@ -1048,6 +1301,14 @@ Result calculate(const Indicator &s, const std::vector<Bar> &bars, int tf, const
         r.lines = {fast, signal};
         r.colors = {blue, gold};
         r.name = "MACD " + std::to_string(p) + "/" + std::to_string(s.slow) + "/" + std::to_string(s.signal);
+    } else if (s.kind == "AD") {
+        r.lines = {ad_balance(bars, p)};
+        r.colors = {s.color};
+        r.name = "A/D " + std::to_string(p);
+        double last = r.lines[0].empty() ? missing : r.lines[0].back();
+        // The letter boundaries were calibrated on daily bars with a 20-session half-life.
+        if (tf == 2 && p == 20 && std::isfinite(last))
+            r.name += std::string(" / ") + ad_grade(last);
     } else if (s.kind == "ATR") {
         r.lines = {ema(true_ranges(bars), p, true)};
         r.colors = {gold};
@@ -1237,5 +1498,132 @@ void preserve_view(View &v, const std::vector<Bar> &old, const std::vector<Bar> 
         v.fit(next.size());
     else
         restore_view(v, next, encode_view(v, old));
+}
+double PnfChart::price(int r) const {
+    // Log rows pass through 100, as in Columnist, so levels are stable across symbols and reloads.
+    return logarithmic ? 100 * std::pow(1 + step, r) : r * step;
+}
+double PnfChart::row(double p) const {
+    return logarithmic ? std::log(p / 100) / std::log1p(step) : p / step;
+}
+double pnf_traditional_box(double price) {
+    // The classic Dorsey/Cohen scale, by price level.
+    double a = std::abs(price);
+    for (auto [limit, box] : {std::pair{0.25, 0.01}, {1., 0.0625}, {5., 0.25}, {20., 0.5}, {100., 1.},
+                              {200., 2.}, {500., 4.}, {1000., 5.}, {25000., 50.}})
+        if (a < limit)
+            return box;
+    return 500;
+}
+PnfChart point_and_figure(const std::vector<Bar> &bars, const PnfSettings &s) {
+    PnfChart out;
+    out.logarithmic = s.logarithmic;
+    out.step = s.logarithmic ? s.percent / 100 : s.box > 0 ? s.box : 0;
+    if (bars.empty())
+        return out;
+    if (!out.step)
+        out.step = pnf_traditional_box(bars.back().close);
+    if (!(out.step > 0) || !std::isfinite(out.step)) {
+        out.error = "Choose a positive box size.";
+        return out;
+    }
+    if (s.logarithmic)
+        for (auto &b : bars)
+            if (!(b.low > 0)) {
+                out.error = "Logarithmic boxes need positive prices; use arithmetic boxes for this symbol.";
+                return out;
+            }
+    int reversal = std::max(1, s.reversal);
+    // A level counts as reached when the price touches it; the epsilon absorbs floating-point noise.
+    auto floor_row = [&](double p) { return int(std::floor(out.row(p) + 1e-9)); };
+    auto ceil_row = [&](double p) { return int(std::ceil(out.row(p) - 1e-9)); };
+    {
+        double low = bars[0].low, high = bars[0].high;
+        for (auto &b : bars) {
+            low = std::min(low, b.low);
+            high = std::max(high, b.high);
+        }
+        if (out.row(high) - out.row(low) > 200000) {
+            out.error = "Box size is too small for this price range.";
+            return out;
+        }
+    }
+    auto &cols = out.columns;
+    int anchor = floor_row(bars[0].close);
+    for (size_t i = 0; i < bars.size(); ++i) {
+        double high = s.closes ? bars[i].close : bars[i].high, low = s.closes ? bars[i].close : bars[i].low;
+        int hi = floor_row(high), lo = ceil_row(low);
+        if (cols.empty()) {
+            // The first column starts once price leaves the starting box; its first box is the start.
+            bool rise = hi > anchor, fall = lo < anchor;
+            if (!rise && !fall)
+                continue;
+            if (rise && (!fall || hi - anchor >= anchor - lo)) {
+                PnfColumn c{true, anchor, hi};
+                c.fills.push_back(0);
+                for (int r = anchor + 1; r <= hi; ++r)
+                    c.fills.push_back(int(i));
+                cols.push_back(std::move(c));
+            } else {
+                PnfColumn c{false, lo, anchor};
+                c.fills.push_back(0);
+                for (int r = anchor - 1; r >= lo; --r)
+                    c.fills.push_back(int(i));
+                cols.push_back(std::move(c));
+            }
+            continue;
+        }
+        auto &c = cols.back();
+        // Continuation takes precedence over reversal within a bar, as in the high/low method.
+        if (c.up) {
+            if (hi > c.high) {
+                for (int r = c.high + 1; r <= hi; ++r)
+                    c.fills.push_back(int(i));
+                c.high = hi;
+            } else if (lo <= c.high - reversal) {
+                PnfColumn next{false, lo, c.high - 1};
+                for (int r = c.high - 1; r >= lo; --r)
+                    next.fills.push_back(int(i));
+                cols.push_back(std::move(next));
+            }
+        } else {
+            if (lo < c.low) {
+                for (int r = c.low - 1; r >= lo; --r)
+                    c.fills.push_back(int(i));
+                c.low = lo;
+            } else if (hi >= c.low + reversal) {
+                PnfColumn next{true, c.low + 1, hi};
+                for (int r = c.low + 1; r <= hi; ++r)
+                    next.fills.push_back(int(i));
+                cols.push_back(std::move(next));
+            }
+        }
+    }
+    // Double-top breakouts and double-bottom breakdowns versus the prior column of the same kind.
+    for (size_t i = 2; i < cols.size(); ++i) {
+        if (cols[i].up && cols[i].high > cols[i - 2].high)
+            cols[i].signal = 1;
+        if (!cols[i].up && cols[i].low < cols[i - 2].low)
+            cols[i].signal = -1;
+    }
+    return out;
+}
+Json encode_pnf(const PnfSettings &s) {
+    return {{"logarithmic", s.logarithmic},
+            {"percent", s.percent},
+            {"box", s.box},
+            {"reversal", s.reversal},
+            {"closes", s.closes}};
+}
+PnfSettings decode_pnf(const Json &j) {
+    PnfSettings s;
+    if (!j.is_object())
+        return s;
+    s.logarithmic = j.value("logarithmic", s.logarithmic);
+    s.percent = std::clamp(j.value("percent", s.percent), .05, 50.);
+    s.box = std::max(0., j.value("box", s.box));
+    s.reversal = std::clamp(j.value("reversal", s.reversal), 1, 10);
+    s.closes = j.value("closes", s.closes);
+    return s;
 }
 } // namespace cr
