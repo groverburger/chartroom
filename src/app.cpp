@@ -1171,7 +1171,9 @@ static void chart(State &s, Panel &p) {
     drawing_plot.high = hi;
     drawing_plot.logarithmic = log_scale;
     PriceScale scale{lo, hi, log_scale};
-    auto [a, b] = p.view.visible(p.bars.size());
+    // Plain locals rather than a structured binding: Apple Clang 15 cannot capture bindings in lambdas.
+    auto visible = p.view.visible(p.bars.size());
+    int a = visible.first, b = visible.second;
     auto px = [&](double i) { return left + float((i - p.view.first + .5) / p.view.count) * pw; };
     auto py = [&](double v) { return bottom - float(scale.fraction(v)) * (bottom - top); };
     auto label = [&](float x, float y, const std::string &t, ImU32 color = muted) {
