@@ -1,0 +1,79 @@
+name: Release
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install static curl
+        run: vcpkg install curl:x64-windows-static
+      - name: Configure
+        # Static curl and MSVC runtime, so the zip is a single self-contained exe.
+        run: >
+          cmake -S . -B build -DBUILD_TESTING=OFF
+          -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+          -DUSE_MSVC_RUNTIME_LIBRARY_DLL=OFF
+      - run: cmake --build build --config Release --parallel
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $name = "Chartroom-${{ github.event.release.tag_name || github.sha }}-windows-x64"
+          $dir = "dist/Chartroom"
+          New-Item -ItemType Directory -Force "$dir/licenses" | Out-Null
+          Copy-Item build/Release/chartroom.exe "$dir/Chartroom.exe"
+          Copy-Item build/Release/build-info.json $dir
+          Copy-Item THIRD_PARTY_NOTICES.md "$dir/licenses/"
+          Copy-Item assets/Roboto-LICENSE.txt, vendor/imgui/LICENSE.txt, vendor/OpenTerminal-LICENSE.txt "$dir/licenses/"
+          Copy-Item vendor/glfw/LICENSE.md "$dir/licenses/GLFW-LICENSE.md"
+          Copy-Item vendor/json/LICENSE.MIT "$dir/licenses/json-LICENSE.MIT"
+          Compress-Archive -Path $dir -DestinationPath "dist/$name.zip"
+          "ASSET=dist/$name.zip" >> $env:GITHUB_ENV
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: ${{ env.ASSET }}
+      - name: Attach to release
+        if: github.event_name == 'release'
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ env.ASSET }}" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        # Universal binary for Apple silicon and Intel; curl comes from the macOS SDK.
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+      - run: cmake --build build --config Release --parallel
+      - name: Package dmg
+        run: |
+          name="Chartroom-${{ github.event.release.tag_name || github.sha }}-macos"
+          mkdir -p dist/dmg
+          cp -R build/chartroom.app dist/dmg/Chartroom.app
+          # Ad-hoc signature so Apple silicon will launch the downloaded app.
+          codesign --force --deep --sign - dist/dmg/Chartroom.app
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname Chartroom -srcfolder dist/dmg -ov -format UDZO "dist/$name.dmg"
+          echo "ASSET=dist/$name.dmg" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: ${{ env.ASSET }}
+      - name: Attach to release
+        if: github.event_name == 'release'
+        run: gh release upload "${{ github.event.release.tag_name }}" "${{ env.ASSET }}" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
