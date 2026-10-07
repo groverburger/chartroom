@@ -31,6 +31,7 @@ jobs:
           New-Item -ItemType Directory -Force "$dir/licenses" | Out-Null
           Copy-Item build/Release/chartroom.exe "$dir/Chartroom.exe"
           Copy-Item build/Release/build-info.json $dir
+          Copy-Item LICENSE "$dir/licenses/Chartroom-LICENSE.txt"
           Copy-Item THIRD_PARTY_NOTICES.md "$dir/licenses/"
           Copy-Item assets/Roboto-LICENSE.txt, vendor/OpenTerminal-LICENSE.txt "$dir/licenses/"
           Copy-Item vendor/imgui/LICENSE.txt "$dir/licenses/imgui-LICENSE.txt"

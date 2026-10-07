@@ -46,3 +46,7 @@ Publish a GitHub release and the [release workflow](.github/workflows/release.ym
 ## Credits
 
 Built with [Dear ImGui](https://github.com/ocornut/imgui), [GLFW](https://www.glfw.org/), [nlohmann/json](https://github.com/nlohmann/json), and the Roboto font. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for licenses.
+
+## License
+
+[MIT](LICENSE)
