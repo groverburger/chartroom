@@ -1017,7 +1017,7 @@ std::set<std::pair<std::string, int>> State::needed_series() const {
     }
     return needed;
 }
-std::vector<std::string> State::visible_symbols() const {
+std::vector<std::string> State::visible_symbols(bool on_screen) const {
     std::vector<std::string> visible;
     std::set<std::string> seen;
     auto append = [&](const std::string &symbol) {
@@ -1036,10 +1036,16 @@ std::vector<std::string> State::visible_symbols() const {
     };
     for (auto &p : panels)
         add(p->symbol);
+    // Rows on screen come first; the rest of each open list follows unless only those are wanted.
     for (auto &w : watchlists)
         if (w->open)
             for (auto &symbol : w->measured ? w->shown : lists[size_t(w->list)].symbols)
                 add(symbol);
+    if (!on_screen)
+        for (auto &w : watchlists)
+            if (w->open)
+                for (auto &symbol : lists[size_t(w->list)].symbols)
+                    add(symbol);
     return visible;
 }
 bool State::tick() {
@@ -1066,11 +1072,18 @@ bool State::tick() {
     if (!offline && quote_tick <= now()) {
         quote_tick = now() + 1;
         // Longest-waiting symbol first, so lists longer than the refresh cycle do not starve.
-        const std::string *due = nullptr;
-        for (auto &symbol : visible)
-            if (!is_expression(symbol) && !quote_loading.count(symbol) && quote_next[symbol] <= now() &&
-                (!due || quote_next[symbol] < quote_next[*due]))
-                due = &symbol;
+        // Charts and rows on screen go before the rest of the open lists.
+        auto pick = [&](const std::vector<std::string> &symbols) {
+            const std::string *due = nullptr;
+            for (auto &symbol : symbols)
+                if (!is_expression(symbol) && !quote_loading.count(symbol) && quote_next[symbol] <= now() &&
+                    (!due || quote_next[symbol] < quote_next[*due]))
+                    due = &symbol;
+            return due ? std::optional<std::string>(*due) : std::nullopt;
+        };
+        auto due = pick(visible_symbols(true));
+        if (!due)
+            due = pick(visible);
         if (due)
             fetch_quote(*due);
     }

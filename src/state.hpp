@@ -33,7 +33,7 @@ struct WatchlistWindow {
     bool open = true, focus = false;
     char input[64]{}, name[128]{};
     std::string error;
-    // Rows drawn last frame; long lists only poll quotes for what is on screen.
+    // Rows drawn last frame; their quotes refresh before the rest of the list.
     std::vector<std::string> shown;
     bool measured = false;
 };
@@ -173,7 +173,7 @@ class State {
     uint64_t visual_revision = 0;
     std::map<std::string, int> quote_display_state;
     std::set<std::pair<std::string, int>> needed_series() const;
-    std::vector<std::string> visible_symbols() const;
+    std::vector<std::string> visible_symbols(bool on_screen = false) const; // Quoted symbols.
     std::set<std::string> needed_companies() const;
     std::string key(const std::string &, int tf) const;
     void fetch(const std::string &, int tf, bool full = false);
