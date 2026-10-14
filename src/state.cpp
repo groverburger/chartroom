@@ -523,6 +523,11 @@ void State::fetch(const std::string &symbol, int tf, bool full) {
 void State::accept_quote(const std::string &symbol, Quote q, bool persist) {
     if (!std::isfinite(q.price) || !std::isfinite(q.change) || q.asof <= 0 || q.fetched <= 0)
         return;
+    // A trade cannot postdate its download. A future timestamp (a provider glitch or a wrong
+    // clock) would otherwise outrank every later quote and freeze the row until that time.
+    q.asof = std::min(q.asof, q.fetched);
+    if (q.extended)
+        q.extended->asof = std::min(q.extended->asof, q.extended->fetched);
     auto old = quotes.find(symbol);
     if (old != quotes.end()) {
         auto &prior = old->second;

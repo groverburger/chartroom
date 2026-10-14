@@ -80,6 +80,17 @@ int main() {
             s.ensure("AAPL", 2); // Loading older chart history must not roll the sidebar back.
             CHECK(s.quotes.at("AAPL").price == 150 && s.quotes.at("AAPL").snapshot);
         }
+        // A quote stamped after it was fetched must not block the quotes that follow it.
+        {
+            auto future = read_json(cache_path(directory, "AAPL", "quote"));
+            future["asof"] = date(now() + 2 * 86400, "%Y-%m-%dT%H:%M:%S");
+            future["fetched_at"] = date(now() - 86400, "%Y-%m-%dT%H:%M:%S");
+            future["extended"] = nullptr;
+            atomic_json(cache_path(directory, "AAPL", "quote"), future);
+            State s(directory, true);
+            CHECK(s.quotes.at("AAPL").asof <= s.quotes.at("AAPL").fetched);
+            atomic_json(cache_path(directory, "AAPL", "quote"), cached_quote);
+        }
         // Live markers expire with one scheduled redraw even when working offline.
         {
             State s(directory, true);
